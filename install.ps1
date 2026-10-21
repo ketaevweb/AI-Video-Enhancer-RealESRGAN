@@ -50,6 +50,27 @@
    23 fps at 960x540), film -> x4v3 @ 640x360 (~15-20 fps detail mode),
    anime and film-hd unchanged. Launchers also pass
    --framedrop=decoder+vo so brief slowdowns no longer drift A/V.
+
+ DELIVERY v7: the PERF v6 update never reached one user's machine -
+ the reachability probe failed, the sync was skipped and the
+ self-copy guard kept the OLD files, while the installer still
+ printed "Setup complete" (engines: 0 built / 5 skipped of the OLD
+ matrix). Fixes:
+   - the network probe and all downloads now pass the WINDOWS SYSTEM
+     PROXY to curl.exe (VPN/proxy clients set it in the registry and
+     curl silently ignores it - on such machines GitHub looks dead
+     to curl while the browser works fine);
+   - Invoke-WebRequest (system TLS/proxy stack) is the fallback for
+     both the probe and every file download;
+   - a PIPELINE VERSION GATE verifies the deployed scripts actually
+     contain the PERF v6 engine marker - if not, the installer
+     refuses to print "Setup complete" and explains both fixes
+     (restore network / extract the fresh zip over C:\AIVideoEnhancer);
+   - build-engines.ps1 prints a full ENGINE INVENTORY with a marker
+     for the 2K realtime engine, so "did it build the new ones?" is
+     always visible;
+   - VSScript.dll locator for pip-installed VapourSynth searched ONE
+     DIRECTORY TOO HIGH (Split-Path -Parent of the python root).
 =====================================================================
 #>
 param(
@@ -108,18 +129,54 @@ if (-not $gpuName) {
 }
 
 # ---------------------------------------------------------------------
-# helper: safe downloads via curl.exe (never through PowerShell stderr)
+# helper: safe downloads. curl.exe is fast but IGNORES the Windows
+# system proxy (VPN/proxy clients set it in the registry - without it
+# raw.githubusercontent.com is unreachable from some networks while
+# the browser works fine). The proxy is therefore passed to curl
+# explicitly, and Invoke-WebRequest (system TLS/proxy stack) is the
+# fallback for both probing and downloading.
 # ---------------------------------------------------------------------
+$SysProxy = $null
+try {
+    $reg = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction Stop
+    if ($reg.ProxyEnable -eq 1 -and $reg.ProxyServer) {
+        $p = "$($reg.ProxyServer)"
+        if ($p -match '=') {   # per-scheme form "http=host:port;https=host:port"
+            $part = ($p -split ';' | Where-Object { $_ -match '^https?=' } | Select-Object -First 1)
+            if ($part) { $p = ($part -split '=', 2)[1] }
+        }
+        if ($p) {
+            if ($p -notmatch '^https?://') { $p = "http://$p" }
+            $SysProxy = $p
+        }
+    }
+} catch { }
+if ($SysProxy) { Write-Host "    using Windows system proxy: $SysProxy" }
+
 function Get-Url {
     param([string]$Url, [string]$OutFile, [int]$TimeoutSec = 7200)
     $tmp = "$OutFile.part"
+    # attempt 1: curl.exe (with the system proxy, if one is configured)
     try {
-        cmd /c "`"$env:SystemRoot\System32\curl.exe`" -L --fail --retry 3 --retry-delay 2 -o `"$tmp`" --connect-timeout 30 --max-time $TimeoutSec `"$Url`" 2>nul"
+        $proxyLine = if ($SysProxy) { "--proxy `"$SysProxy`"" } else { "" }
+        cmd /c "`"$env:SystemRoot\System32\curl.exe`" -L --fail --retry 3 --retry-delay 2 $proxyLine -o `"$tmp`" --connect-timeout 30 --max-time $TimeoutSec `"$Url`" 2>nul"
         if ($LASTEXITCODE -eq 0 -and (Test-Path $tmp)) {
             Move-Item $tmp $OutFile -Force
             return $true
         }
     } catch { }
+    # attempt 2: Invoke-WebRequest (system TLS/proxy stack, slower but
+    # succeeds where curl gets throttled/blocked)
+    try {
+        $prev = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $Url -OutFile $tmp -TimeoutSec $TimeoutSec -UseBasicParsing | Out-Null
+        $ProgressPreference = $prev
+        if (Test-Path $tmp) {
+            Move-Item $tmp $OutFile -Force
+            return $true
+        }
+    } catch { }
+    $ProgressPreference = 'SilentlyContinue'
     if (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
     return $false
 }
@@ -462,12 +519,30 @@ Write-Step 'Installing pipeline scripts and mpv configs'
 $RepoRaw = 'https://raw.githubusercontent.com/ketaevweb/AI-Video-Enhancer-RealESRGAN/main'
 
 # quick reachability probe: offline machines skip the sync instantly
-# instead of timing out on every single file
+# instead of timing out on every single file. curl alone is NOT enough:
+# it ignores the Windows system proxy, and some networks throttle
+# raw.githubusercontent.com - Invoke-WebRequest goes through the
+# system TLS/proxy stack and is tried as a fallback.
 $Online = $false
 try {
-    cmd /c "`"$env:SystemRoot\System32\curl.exe`" -s -o NUL --fail --connect-timeout 5 --max-time 10 -r 0-0 `"$RepoRaw/README.md`" 2>nul"
+    $proxyLine = if ($SysProxy) { "--proxy `"$SysProxy`"" } else { "" }
+    cmd /c "`"$env:SystemRoot\System32\curl.exe`" -s -o NUL --fail --connect-timeout 8 --max-time 20 $proxyLine `"$RepoRaw/README.md`" 2>nul"
     $Online = ($LASTEXITCODE -eq 0)
 } catch { }
+if (-not $Online) {
+    try {
+        $prev = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
+        $probe = Invoke-WebRequest -Uri "$RepoRaw/README.md" -TimeoutSec 20 -UseBasicParsing
+        $ProgressPreference = $prev
+        $Online = ($probe.StatusCode -eq 200)
+    } catch { }
+}
+if ($Online) {
+    Write-Ok 'GitHub reachable - pipeline files will be synced from main'
+} else {
+    Write-Wrn 'GitHub is NOT reachable (offline, network throttling, or a proxy curl cannot see).'
+    Write-Wrn 'Already-installed files will be KEPT AS-IS; the pipeline version gate will verify them.'
+}
 
 function Deploy-File([string]$Rel, [string]$DstDir) {
     $dst = Join-Path $DstDir (Split-Path $Rel -Leaf)
@@ -537,7 +612,31 @@ foreach ($stale in @('mpv.conf', 'input.conf')) {
         Write-Ok "removed stale $mpvDir\$stale (mpv only reads portable_config\)"
     }
 }
-Write-Ok "mpv config deployed to $portable (hotkeys: Ctrl+a general / Ctrl+n anime / Ctrl+0 off)"
+Write-Ok "mpv config deployed to $portable (hotkeys: Ctrl+a general / Ctrl+f film / Ctrl+n anime / Ctrl+0 off)"
+
+# ---------------------------------------------------------------------
+# 6a-2. PIPELINE VERSION GATE (DELIVERY v7).
+#       The installer used to print "Setup complete" even when the sync
+#       silently kept OLD files (offline + self-copy guard). The user
+#       then rightly wonders why nothing got faster. Verify the
+#       functional marker of the current round inside the deployed
+#       script and fail LOUDLY if the pipeline is stale.
+# ---------------------------------------------------------------------
+Write-Step 'Verifying pipeline version'
+$genVpy = Join-Path $Base 'enhance-general.vpy'
+$marker = $false
+try { $marker = Select-String -Path $genVpy -Pattern '1x3x360x640' -Quiet } catch { }
+if ($marker) {
+    Write-Ok 'pipeline version: PERF v6 (2K realtime engines, 640x360 input)'
+} else {
+    Write-Bad 'pipeline files are STALE - no PERF v6 marker in enhance-general.vpy.'
+    Write-Host '    This is why playback still uses the old slow 7 fps config.'
+    Write-Host '    Two ways to fix:'
+    Write-Host '      a) restore internet / VPN so GitHub is reachable, then re-run install.ps1'
+    Write-Host '      b) download AI-Video-Enhancer-RealESRGAN.zip from the chat, extract it'
+    Write-Host '         INTO C:\AIVideoEnhancer with file OVERWRITE, then re-run install.ps1'
+    exit 1
+}
 
 # ---------------------------------------------------------------------
 # 6b. locate VSScript.dll (the runtime mpv loads for VapourSynth).
@@ -551,7 +650,11 @@ if ($vspipe) {
         $probeDirs += (Join-Path $Matches[1] 'core64')
     }
     if ($vspipe -imatch '^(.*)\\Scripts\\vspipe\.exe$') {
-        $probeDirs += (Join-Path (Split-Path -Parent $Matches[1]) 'Lib\site-packages\vapoursynth')
+        # pip layout: <python root>\Lib\site-packages\vapoursynth\VSScript.dll
+        # DELIVERY v7 fix: the old code took Split-Path -Parent of the
+        # python ROOT and probed one directory too high, so pip installs
+        # always ended in "VSScript.dll was not auto-located".
+        $probeDirs += (Join-Path $Matches[1] 'Lib\site-packages\vapoursynth')
     }
 }
 $probeDirs += "$env:ProgramFiles\VapourSynth\core64"

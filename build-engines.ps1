@@ -278,6 +278,25 @@ foreach ($e in $engines) {
 # ------------------------------------------------------------------
 Write-Host '====================================================='
 Write-Ok ("finished: {0} built, {1} skipped, {2} failed" -f $built, $skipped, $failed)
+
+# ------------------------------------------------------------------
+# Inventory: shows exactly which engines exist RIGHT NOW, so "did it
+# build the new 2K realtime one?" is always answerable at a glance.
+# ------------------------------------------------------------------
+Write-Host ''
+Write-Host '  Engine inventory:' -ForegroundColor Cyan
+Get-ChildItem $EnginesDir -Filter '*.engine' -ErrorAction SilentlyContinue | ForEach-Object {
+    $mb  = [math]::Round($_.Length / 1MB, 1)
+    $tag = if ($_.Name -like '*360x640*') { '   <- 2K realtime (PERF v6)' } else { '' }
+    Write-Host ("    {0}  ({1} MB){2}" -f $_.Name, $mb, $tag)
+}
+if (Test-Path (Join-Path $EnginesDir 'realesr-animevideov3_1x3x360x640_fp16.engine')) {
+    Write-Ok '2K realtime engine present - watch-AI-general.bat is ready (~50 fps class)'
+} else {
+    Write-Wrn 'the 2K realtime engine (realesr-animevideov3_1x3x360x640_fp16) is NOT built yet!'
+    Write-Host '    If the build failed above, simply re-run this script - finished engines are skipped.'
+}
+
 if ($failedNames.Count -gt 0) {
     Write-Bad ('failed engines: {0}' -f ($failedNames -join ', '))
     Write-Host '    Check the per-attempt logs in' -NoNewline; Write-Host " $LogsDir" -ForegroundColor Yellow
