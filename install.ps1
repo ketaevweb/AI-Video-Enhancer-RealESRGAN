@@ -32,6 +32,15 @@
  R79 - the last release with API3 support - automatically: pip
  downgrade for Python-installed VapourSynth, the R79 setup for the
  standalone one.
+
+ FIX v5: running install.ps1 from inside $Base itself (the simple way:
+ download everything into C:\AIVideoEnhancer and run it there) made
+ "Copy-Item $Base\file $Base" fail with "cannot overwrite itself" and
+ - with $ErrorActionPreference='Stop' - the installer died BEFORE the
+ launchers and portable_config were written. Pipeline files are now
+ SYNCED from GitHub main (source of truth) with local-copy fallback
+ for offline machines, so re-running this installer always brings the
+ current scripts - no more manual re-downloading of individual files.
 =====================================================================
 #>
 param(
@@ -436,22 +445,50 @@ foreach ($m in $Models) {
 
 # ---------------------------------------------------------------------
 # 6. Deploy pipeline scripts + mpv configs + launchers
+#    FIX v5: never Copy-Item a file onto itself (happens when
+#    $ProjectRoot -eq $Base). Sync from GitHub main first; fall back
+#    to a local copy only when GitHub is unreachable.
 # ---------------------------------------------------------------------
 Write-Step 'Installing pipeline scripts and mpv configs'
-Copy-Item (Join-Path $ProjectRoot 'enhance-film.vpy')     $Base -Force
-Copy-Item (Join-Path $ProjectRoot 'enhance-film-hd.vpy')  $Base -Force
-Copy-Item (Join-Path $ProjectRoot 'enhance-anime.vpy')    $Base -Force
-Copy-Item (Join-Path $ProjectRoot 'enhance-general.vpy')  $Base -Force
-Copy-Item (Join-Path $ProjectRoot 'build-engines.ps1')    $Base -Force
-if (Test-Path (Join-Path $ProjectRoot 'scripts\test-speed.ps1')) {
-    Copy-Item (Join-Path $ProjectRoot 'scripts\test-speed.ps1') "$ScriptsDir\" -Force
+$RepoRaw = 'https://raw.githubusercontent.com/ketaevweb/AI-Video-Enhancer-RealESRGAN/main'
+
+# quick reachability probe: offline machines skip the sync instantly
+# instead of timing out on every single file
+$Online = $false
+try {
+    cmd /c "`"$env:SystemRoot\System32\curl.exe`" -s -o NUL --fail --connect-timeout 5 --max-time 10 -r 0-0 `"$RepoRaw/README.md`" 2>nul"
+    $Online = ($LASTEXITCODE -eq 0)
+} catch { }
+
+function Deploy-File([string]$Rel, [string]$DstDir) {
+    $dst = Join-Path $DstDir (Split-Path $Rel -Leaf)
+    $src = Join-Path $ProjectRoot $Rel
+    $selfCopy = ([IO.Path]::GetFullPath($src) -ieq [IO.Path]::GetFullPath($dst))
+    if ($Online -and (Get-Url "$RepoRaw/$Rel" $dst -TimeoutSec 120)) {
+        Write-Ok "synced  $Rel  (latest from GitHub main)"
+    } elseif (-not $selfCopy -and (Test-Path $src)) {
+        Copy-Item $src $dst -Force
+        Write-Ok "copied  $Rel  (local copy, no network)"
+    } elseif (Test-Path $dst) {
+        Write-Wrn "kept existing $dst (no network, no local source copy)"
+    } else {
+        Write-Bad "$Rel is missing and there is no network - re-run the installer online."
+        exit 1
+    }
 }
+
+Deploy-File 'enhance-film.vpy'     $Base
+Deploy-File 'enhance-film-hd.vpy'  $Base
+Deploy-File 'enhance-anime.vpy'    $Base
+Deploy-File 'enhance-general.vpy'  $Base
+Deploy-File 'build-engines.ps1'    $Base
+if (-not (Test-Path $ScriptsDir)) { New-Item -ItemType Directory -Path $ScriptsDir -Force | Out-Null }
+Deploy-File 'scripts/test-speed.ps1' $ScriptsDir
 if (-not (Test-Path $MpvConfDir)) { New-Item -ItemType Directory -Path $MpvConfDir -Force | Out-Null }
-if (Test-Path (Join-Path $ProjectRoot 'mpv')) {
-    Copy-Item (Join-Path $ProjectRoot 'mpv\*') $MpvConfDir -Force -ErrorAction SilentlyContinue
-}
-Write-Ok "scripts copied to $Base"
-Write-Ok "mpv config examples copied to $MpvConfDir"
+Deploy-File 'mpv/mpv.conf'   $MpvConfDir
+Deploy-File 'mpv/input.conf' $MpvConfDir
+Write-Ok "scripts synced into $Base"
+Write-Ok "mpv config examples synced into $MpvConfDir"
 
 # ---------------------------------------------------------------------
 # 6a. mpv: find the binary and deploy portable_config next to it.
@@ -480,8 +517,10 @@ if ($mpvExe -and (Test-Path $mpvExe)) {
 
 $portable = Join-Path $mpvDir 'portable_config'
 New-Item -ItemType Directory -Path $portable -Force | Out-Null
-Copy-Item (Join-Path $ProjectRoot 'mpv\mpv.conf')   $portable -Force
-Copy-Item (Join-Path $ProjectRoot 'mpv\input.conf') $portable -Force
+# FIX v5: Deploy-File instead of Copy-Item from $ProjectRoot - a user who
+# downloaded ONLY install.ps1 still gets a complete portable_config here.
+Deploy-File 'mpv/mpv.conf'   $portable
+Deploy-File 'mpv/input.conf' $portable
 foreach ($stale in @('mpv.conf', 'input.conf')) {
     $sp = Join-Path $mpvDir $stale
     if (Test-Path $sp) {
@@ -544,6 +583,12 @@ rem Drag a movie onto this file (or run: watch-AI-$profile.bat "D:\Films\movie.m
 set "AIVH=$Base"
 $pathLine
 cd /d "%AIVH%"
+if "%~1"=="" (
+    echo Drag a movie file onto this .bat to watch it with AI enhancement.
+    echo.
+    pause
+    exit /b 0
+)
 start "" "$mpvExe" --vf="vapoursynth=enhance-$profile.vpy:concurrent-frames=6" %*
 "@
 }
@@ -556,6 +601,12 @@ set "AIVH=$Base"
 $pathLine
 cd /d "%AIVH%"
 set "AIVH_DENOISE=0.5"
+if "%~1"=="" (
+    echo Drag a movie file onto this .bat to watch it with AI enhancement.
+    echo.
+    pause
+    exit /b 0
+)
 start "" "$mpvExe" --vf="vapoursynth=enhance-general.vpy:concurrent-frames=6" %*
 "@
 # debug launcher: visible console + full log, for diagnosing silent exits
