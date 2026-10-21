@@ -14,13 +14,21 @@
  This version runs trtexec via Start-Process with stdout/stderr
  redirected to log files and decides success ONLY by the process
  exit code. It is fully resumable: finished engines are skipped.
+
+ FIX v3: trtexec flags aligned with the official vstrt documentation
+ (AmusementClub/vs-mlrt, vstrt/README.md): a static engine is built
+ with --minShapes/--optShapes/--maxShapes all equal (input:1x3xHxW)
+ and the timing cache flag is --timingCacheFile (the previous
+ --shapes= / --timingCache= spellings do not exist in trtexec).
 =====================================================================
 #>
 [CmdletBinding()]
 param(
     [string]$Base = 'C:\AIVideoEnhancer',
     # Skip the heavy RRDB x2plus engine (720p HD path falls back to the 540p engine automatically)
-    [switch]$Minimal
+    [switch]$Minimal,
+    # Rebuild engines even if a finished engine file already exists
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -161,8 +169,11 @@ foreach ($e in $engines) {
     if (Test-Path $errLog) { Remove-Item $errLog -Force -ErrorAction SilentlyContinue }
 
     # ---- attempt 1: with static shapes + timing cache --------------
+    # (official vstrt docs: minShapes/optShapes/maxShapes + timingCacheFile;
+    #  all three shapes equal -> a static engine locked to 1x3xHxW)
     $argStr = "--onnx=""$onnxPath"" --fp16 --saveEngine=""$enginePath"" " +
-              "--shapes=$shape --timingCache=""$timingCache"" --errorOnTimingCacheMiss=false " +
+              "--minShapes=$shape --optShapes=$shape --maxShapes=$shape " +
+              "--timingCacheFile=""$timingCache"" " +
               "--memPoolSize=workspace:2048"
 
     $ok = $false

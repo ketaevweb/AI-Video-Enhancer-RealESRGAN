@@ -23,6 +23,15 @@
  remembers the final DLL path. The TensorRT runtime DLLs live in the
  vsmlrt-cuda subfolder, so every .vpy loader now registers that folder
  via os.add_dll_directory() + PATH before LoadPlugin.
+
+ FIX v4: the vstrt plugin of vs-mlrt is still built against VapourSynth
+ API3 (vs-mlrt issue #171; true for v15.x, the v16.x test line and
+ master as of 2026-10). VapourSynth R80 REMOVED API3 plugin support,
+ so on R80/R81 the plugin load fails with "Plugin ... uses API 3,
+ which is no longer supported". The installer now pins VapourSynth
+ R79 - the last release with API3 support - automatically: pip
+ downgrade for Python-installed VapourSynth, the R79 setup for the
+ standalone one.
 =====================================================================
 #>
 param(
@@ -137,9 +146,11 @@ $vspipe = Find-Vspipe
 if ($vspipe) {
     Write-Ok "VapourSynth: $vspipe"
 } else {
-    Write-Wrn 'VapourSynth not found - downloading VapourSynth R81...'
-    $vsSetup = Join-Path $env:TEMP 'VapourSynth-x64-R81.exe'
-    $ok = Get-Url 'https://github.com/vapoursynth/vapoursynth/releases/download/R81/VapourSynth-x64-R81.exe' $vsSetup
+    # FIX v4: fresh installs get R79 - the last release with API3 plugin
+    # support. The vstrt plugin of vs-mlrt needs API3 (vs-mlrt issue #171).
+    Write-Wrn 'VapourSynth not found - downloading VapourSynth R79...'
+    $vsSetup = Join-Path $env:TEMP 'VapourSynth-x64-R79.exe'
+    $ok = Get-Url 'https://github.com/vapoursynth/vapoursynth/releases/download/R79/VapourSynth-x64-R79.exe' $vsSetup
     if (-not $ok) { Write-Bad 'Could not download VapourSynth. Install it manually from vapoursynth.com, then re-run.'; exit 1 }
     Write-Host '    Installing VapourSynth (silently)...'
     Start-Process -FilePath $vsSetup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait
@@ -147,6 +158,69 @@ if ($vspipe) {
     $vspipe = Find-Vspipe
     if ($vspipe) { Write-Ok "VapourSynth installed: $vspipe" }
     else { Write-Bad 'VapourSynth installed but vspipe.exe not found on PATH. Re-login or reboot, then re-run.'; exit 1 }
+}
+
+# FIX v4: pin VapourSynth R79 when a newer (R80+) build is detected.
+# The vstrt plugin is API3-only and R80 removed API3 support, so any
+# newer VapourSynth fails the sanity check below with
+# "Plugin ... uses API 3, which is no longer supported".
+function Get-VsVersion {
+    try {
+        $line = (cmd /c "`"$vspipe`" --version 2>nul") | Select-Object -First 1
+        if ($line -match 'R(\d+)') { return [int]$Matches[1] }
+    } catch { }
+    return $null
+}
+
+$vsVer = Get-VsVersion
+if ($vsVer -and $vsVer -ge 80) {
+    Write-Wrn ("VapourSynth R{0} is too new for the vstrt (TensorRT) plugin." -f $vsVer)
+    Write-Wrn 'vstrt is still an API3 plugin and VapourSynth R80 removed API3 support'
+    Write-Wrn '(vs-mlrt issue #171) - it fails with "uses API 3, which is no longer supported".'
+    $isPipVapourSynth = ($vspipe -match '\\Python3\d+\\Scripts\\')
+    if ($isPipVapourSynth) {
+        Write-Host '    Pinning VapourSynth R79 via pip (engines and models stay intact)...'
+        $pipDone = $false
+        foreach ($pyCmd in @('py -3.12', 'py -3', 'python')) {
+            cmd /c "$pyCmd -m pip install ""vapoursynth==79"" 2>nul"
+            if ($LASTEXITCODE -eq 0) { $pipDone = $true; break }
+        }
+        if ($pipDone) {
+            $vspipe = Find-Vspipe
+            $vsVer = Get-VsVersion
+            if ($vsVer -and $vsVer -lt 80) {
+                Write-Ok ("VapourSynth R{0} pinned (API3 support restored)." -f $vsVer)
+            } else {
+                Write-Bad 'pip reported success but vspipe is still not R79.'
+                Write-Host '    Try manually:  py -3.12 -m pip install "vapoursynth==79"  then re-run.'
+                exit 1
+            }
+        } else {
+            Write-Bad 'Could not downgrade VapourSynth via pip. Run manually:'
+            Write-Host '      py -3.12 -m pip install "vapoursynth==79"' -ForegroundColor Yellow
+            exit 1
+        }
+    } else {
+        Write-Host '    Downloading the VapourSynth R79 standalone installer...'
+        $vsSetup = Join-Path $env:TEMP 'VapourSynth-x64-R79.exe'
+        $ok = Get-Url 'https://github.com/vapoursynth/vapoursynth/releases/download/R79/VapourSynth-x64-R79.exe' $vsSetup
+        if (-not $ok) { Write-Bad 'Could not download the R79 installer. Install VapourSynth R79 manually, then re-run.'; exit 1 }
+        Start-Process -FilePath $vsSetup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait
+        $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
+        $vspipe = Find-Vspipe
+        $vsVer = Get-VsVersion
+        if ($vsVer -and $vsVer -lt 80) {
+            Write-Ok ("VapourSynth R{0} pinned (API3 support restored)." -f $vsVer)
+        } else {
+            Write-Bad 'VapourSynth R79 did not replace the newer build automatically.'
+            Write-Bad 'Uninstall VapourSynth via "Apps and Features", then re-run this installer.'
+            exit 1
+        }
+    }
+} elseif ($vsVer) {
+    Write-Ok ("VapourSynth R{0} (API3-compatible, vstrt OK)" -f $vsVer)
+} else {
+    Write-Wrn 'Could not determine the VapourSynth version (continuing - the sanity check will decide).'
 }
 
 # ---------------------------------------------------------------------
@@ -309,6 +383,14 @@ if ($LASTEXITCODE -eq 0) {
 } else {
     Write-Bad 'vstrt plugin failed to load. Error output:'
     if (Test-Path $errFile) { Get-Content $errFile -Tail 12 | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkGray } }
+    if (Test-Path $errFile) {
+        $errTxt = Get-Content $errFile -Raw
+        if ($errTxt -match 'API 3') {
+            Write-Wrn 'The error mentions API 3: your VapourSynth is newer than R79.'
+            Write-Wrn 'R80+ removed API3 plugin support, but vstrt (vs-mlrt) still needs API3.'
+            Write-Wrn 'Re-run this installer (FIX v4) - it pins VapourSynth R79 automatically.'
+        }
+    }
     exit 1
 }
 
