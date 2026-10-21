@@ -3,6 +3,10 @@
 #  enhance-anime.vpy - realesr-animevideov3 (compact) for mpv
 #  Purpose-built anime/animation model. Very fast, temporally stable.
 #  Engine input: 960x540, output x4.
+#  QUALITY v8 note: the "cartoon" rendering is CORRECT here - this
+#  model is meant for actual anime/animation. For live action use
+#  enhance-general.vpy instead.
+# AIVH PIPELINE VERSION: QUALITY v8
 # =====================================================================
 import os
 import vapoursynth as vs

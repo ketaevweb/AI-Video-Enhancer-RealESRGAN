@@ -1,18 +1,21 @@
 # -*- coding: utf-8 -*-
 # =====================================================================
 #  enhance-film.vpy - realesr-general-x4v3 (compact) - DETAIL mode
-#  Max-detail live-action profile for a 2K (2560x1440) monitor.
+#  OPT-IN max-detail live-action profile for a 2K (2560x1440) monitor.
 #
-#  PERF v6: engine input lowered 960x540 -> 640x360 (output 2560x1440
-#  directly - no more 4K downscale). Measured on RTX 3080, 720p source:
-#  x4v3 @ 960x540 gave only 7 fps in mpv; at 640x360 expect ~15-20 fps.
-#  Heavy scenes may still drop frames / drift A/V - if smoothness
-#  matters more than micro-detail, use watch-AI-general.bat (the
-#  animevideov3 engine, ~50 fps, also denoises compressed sources).
+#  QUALITY v8: the primary film profile is now enhance-general.vpy
+#  (HD sources play AI-free with Spline36; SD sources get x4v3 with
+#  the original texture merged back). This script is the pure-model
+#  detail mode: x4v3 on EVERY source at 640x360 engine input ->
+#  2560x1440. Expect ~10-15 fps on RTX 3080 (the model always costs
+#  GPU time) and a cleaner-but-synthetic look: a compact x4 model fed
+#  360p invents detail and erases film grain. Use it when micro-
+#  detail matters more than naturalness and smoothness.
 #
 #  Used by mpv:  --vf=vapoursynth=enhance-film.vpy
 #  mpv provides the current frame as the "video_in" clip.
 # =====================================================================
+# AIVH PIPELINE VERSION: QUALITY v8
 import os
 import vapoursynth as vs
 from vapoursynth import core

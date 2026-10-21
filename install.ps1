@@ -612,7 +612,7 @@ foreach ($stale in @('mpv.conf', 'input.conf')) {
         Write-Ok "removed stale $mpvDir\$stale (mpv only reads portable_config\)"
     }
 }
-Write-Ok "mpv config deployed to $portable (hotkeys: Ctrl+a general / Ctrl+f film / Ctrl+n anime / Ctrl+0 off)"
+Write-Ok "mpv config deployed to $portable (hotkeys: Ctrl+a films / Ctrl+f detail / Ctrl+n anime / Ctrl+0 off)"
 
 # ---------------------------------------------------------------------
 # 6a-2. PIPELINE VERSION GATE (DELIVERY v7).
@@ -625,12 +625,13 @@ Write-Ok "mpv config deployed to $portable (hotkeys: Ctrl+a general / Ctrl+f fil
 Write-Step 'Verifying pipeline version'
 $genVpy = Join-Path $Base 'enhance-general.vpy'
 $marker = $false
-try { $marker = Select-String -Path $genVpy -Pattern '1x3x360x640' -Quiet } catch { }
+try { $marker = Select-String -Path $genVpy -Pattern 'QUALITY v8' -Quiet } catch { }
 if ($marker) {
-    Write-Ok 'pipeline version: PERF v6 (2K realtime engines, 640x360 input)'
+    Write-Ok 'pipeline version: QUALITY v8 (natural film look: HD = AI-free Spline36, SD = x4v3 + texture restore)'
 } else {
-    Write-Bad 'pipeline files are STALE - no PERF v6 marker in enhance-general.vpy.'
-    Write-Host '    This is why playback still uses the old slow 7 fps config.'
+    Write-Bad 'pipeline files are STALE - no QUALITY v8 marker in enhance-general.vpy.'
+    Write-Host '    Old files make live-action movies look like cartoons (anime model'
+    Write-Host '    as the primary engine) and/or play at 7 fps.'
     Write-Host '    Two ways to fix:'
     Write-Host '      a) restore internet / VPN so GitHub is reachable, then re-run install.ps1'
     Write-Host '      b) download AI-Video-Enhancer-RealESRGAN.zip from the chat, extract it'
@@ -708,9 +709,8 @@ start "" "$mpvExe" --vf="vapoursynth=enhance-$profile.vpy:concurrent-frames=6" -
 Write-Bat (Join-Path $Base 'watch-AI-general-denoise.bat') @"
 @echo off
 rem AI enhancer: general profile.
-rem PERF v6: the fast animevideov3 engine denoises compressed/old rips
-rem by itself, so the separate wdn blend is gone - this launcher is now
-rem identical to watch-AI-general.bat (kept so old shortcuts keep working).
+rem QUALITY v8: identical to watch-AI-general.bat (kept so old shortcuts
+rem keep working): HD sources play AI-free, SD get x4v3 + texture restore.
 set "AIVH=$Base"
 $pathLine
 cd /d "%AIVH%"
@@ -763,12 +763,12 @@ Write-Host ' Setup complete.' -ForegroundColor Green
 Write-Host '=====================================================' -ForegroundColor Cyan
 Write-Host ''
 Write-Host '  How to watch:'
-Write-Host "    drag a movie onto  $Base\watch-AI-general.bat   (PRIMARY - ~50 fps, films and anime)"
-Write-Host "    or onto            $Base\watch-AI-film.bat      (detail mode ~15-20 fps, may drop on heavy scenes)"
-Write-Host "    or onto            $Base\watch-AI-anime.bat     (animation at maximum internal detail)"
+Write-Host "    drag a movie onto  $Base\watch-AI-general.bat   (PRIMARY for films: HD plays natural AI-free, SD with AI + texture restore)"
+Write-Host "    or onto            $Base\watch-AI-film.bat      (opt-in detail mode ~10-15 fps, synthetic look)"
+Write-Host "    or onto            $Base\watch-AI-anime.bat     (anime/animation ONLY - paints live action)"
 Write-Host "    nothing happens?   drag the movie onto $Base\watch-AI-debug.bat"
 Write-Host '                       (runs mpv with a visible console and opens the error log in Notepad)'
-Write-Host '  In-player hotkeys: Ctrl+a general | Ctrl+f film | Ctrl+n anime | Ctrl+0 AI off'
+Write-Host '  In-player hotkeys: Ctrl+a films | Ctrl+f detail | Ctrl+n anime | Ctrl+0 AI off'
 Write-Host '  Speed check  : powershell -ExecutionPolicy Bypass -File C:\AIVideoEnhancer\scripts\test-speed.ps1'
 Write-Host '  Rebuild      : powershell -ExecutionPolicy Bypass -File C:\AIVideoEnhancer\build-engines.ps1'
 Write-Host ''

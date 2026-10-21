@@ -7,6 +7,9 @@
 #  If the x2plus engine has not been built yet, this script
 #  automatically falls back to the 540p x4plus engine, so mpv profiles
 #  can always reference it safely.
+#  QUALITY v8 note: unchanged - this stays the OFFLINE max-quality
+#  path (RRDB is far too heavy for realtime viewing).
+# AIVH PIPELINE VERSION: QUALITY v8
 # =====================================================================
 import os
 import vapoursynth as vs
