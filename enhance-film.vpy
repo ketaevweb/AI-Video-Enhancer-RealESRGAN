@@ -1,9 +1,16 @@
 # -*- coding: utf-8 -*-
 # =====================================================================
-#  enhance-film.vpy - Real-ESRGAN (RealESRGAN_x4plus, RRDB) for mpv
-#  Best-detail live-action profile. Engine input: 960x540, output x4.
+#  enhance-film.vpy - realesr-general-x4v3 (compact) - DETAIL mode
+#  Max-detail live-action profile for a 2K (2560x1440) monitor.
 #
-#  Used by mpv:  --vf=vapoursynth=C\:/AIVideoEnhancer/enhance-film.vpy
+#  PERF v6: engine input lowered 960x540 -> 640x360 (output 2560x1440
+#  directly - no more 4K downscale). Measured on RTX 3080, 720p source:
+#  x4v3 @ 960x540 gave only 7 fps in mpv; at 640x360 expect ~15-20 fps.
+#  Heavy scenes may still drop frames / drift A/V - if smoothness
+#  matters more than micro-detail, use watch-AI-general.bat (the
+#  animevideov3 engine, ~50 fps, also denoises compressed sources).
+#
+#  Used by mpv:  --vf=vapoursynth=enhance-film.vpy
 #  mpv provides the current frame as the "video_in" clip.
 # =====================================================================
 import os
@@ -11,10 +18,10 @@ import vapoursynth as vs
 from vapoursynth import core
 
 BASE   = r"C:\AIVideoEnhancer"
-ENGINE = os.path.join(BASE, "engines", "RealESRGAN_x4plus_1x3x540x960_fp16.engine")
-IN_W   = 960     # static TensorRT engine input size
-IN_H   = 540
-SCALE  = 4       # RealESRGAN_x4plus upscales 4x
+ENGINE = os.path.join(BASE, "engines", "realesr-general-x4v3_1x3x360x640_fp16.engine")
+IN_W   = 640     # static TensorRT engine input size
+IN_H   = 360
+SCALE  = 4       # general-x4v3 upscales 4x -> 2560x1440
 
 
 # ---------------------------------------------------------------------
@@ -116,6 +123,8 @@ if padded:
 
 # ---------------------------------------------------------------------
 # 4. "Honest" Real-ESRGAN inference on the GPU (TensorRT, fp16)
+#    (x4v3 compact - the heavy RRDB x4plus could not reach realtime:
+#     see the measured numbers in the header)
 # ---------------------------------------------------------------------
 up = core.trt.Model(fit, engine_path=ENGINE, num_streams=2)
 

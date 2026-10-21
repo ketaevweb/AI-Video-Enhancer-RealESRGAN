@@ -1,29 +1,30 @@
 # -*- coding: utf-8 -*-
 # =====================================================================
-#  enhance-general.vpy - realesr-general-x4v3 (+ optional wdn denoise)
-#  PRIMARY realtime profile for live-action films.
+#  enhance-general.vpy - realesr-animevideov3 (compact, 621K params)
+#  PRIMARY realtime profile for a 2K (2560x1440) monitor.
 #
-#  Default: ONLY the clean model runs - the fastest path (~30 fps class
-#  on RTX 3080). The optional "wdn" denoise blend removes heavy noise
-#  from old DVD/VHS rips but runs a SECOND model per frame, halving the
-#  realtime speed. Enable it via:
-#    - watch-AI-general-denoise.bat launcher, or
-#    - environment variable: set AIVH_DENOISE=0.5 before starting mpv
+#  PERF v6: measured on RTX 3080 / driver 617.42, 720p source:
+#    general-x4v3 @ 960x540 in  ->   7 fps in mpv   (unusable)
+#    animevideov3 @ 960x540 in  ->  23 fps in mpv   (watchable)
+#  Compute scales with the model OUTPUT pixel count, so the engine now
+#  takes 640x360 input and produces 2560x1440 directly:
+#    animevideov3 @ 640x360 in  -> ~50 fps in mpv   (large headroom,
+#    no more A/V desync, GPU no longer pegged at the frame budget)
 #
-#  DENOISE: 0.0 = pure sharpening (no denoise, fast) ... 1.0 = max denoise
-#  0.5 is a good starting point for DVD-quality sources.
+#  The model was trained for low-quality video streams, so it also
+#  DENOISES compressed/old rips by itself - the separate wdn blend of
+#  the old x4v3 pipeline is gone (it doubled the frame cost).
+#  Max-detail live-action alternative: enhance-film.vpy.
 # =====================================================================
 import os
 import vapoursynth as vs
 from vapoursynth import core
 
-BASE = r"C:\AIVideoEnhancer"
-ENGINE_CLEAN = os.path.join(BASE, "engines", "realesr-general-x4v3_1x3x540x960_fp16.engine")
-ENGINE_WDN   = os.path.join(BASE, "engines", "realesr-general-wdn-x4v3_1x3x540x960_fp16.engine")
-DENOISE = float(os.environ.get("AIVH_DENOISE", "0"))   # 0 = fastest single-model path; try 0.5 for noisy rips
-IN_W    = 960
-IN_H    = 540
-SCALE   = 4
+BASE   = r"C:\AIVideoEnhancer"
+ENGINE = os.path.join(BASE, "engines", "realesr-animevideov3_1x3x360x640_fp16.engine")
+IN_W   = 640     # static TensorRT engine input size
+IN_H   = 360
+SCALE  = 4       # animevideov3 upscales 4x -> 2560x1440
 
 
 # --- resilient plugin loader (FIX v3: vstrt.dll in v15+) -------------
@@ -78,10 +79,9 @@ _ensure_vstrt()
 if not hasattr(core, "trt"):
     raise RuntimeError("vstrt (vs-mlrt) plugin did not load")
 
-for eng in (ENGINE_CLEAN, ENGINE_WDN):
-    if not os.path.isfile(eng):
-        raise RuntimeError(
-            "TensorRT engine not found:\n  %s\nBuild it with build-engines.ps1" % eng)
+if not os.path.isfile(ENGINE):
+    raise RuntimeError(
+        "TensorRT engine not found:\n  %s\nBuild it with build-engines.ps1" % ENGINE)
 
 src = video_in
 
@@ -99,6 +99,9 @@ else:
     rgb = core.resize.Bicubic(
         src, format=vs.RGBS, matrix_in_s=mat, range_in_s=rng)
 
+# Fit into the static engine input, preserving aspect ratio.
+# Content is resized to (fw, fh) and padded to (IN_W, IN_H); the
+# padding is cropped away after inference. Nothing is distorted.
 scale = min(IN_W / src.width, IN_H / src.height)
 fw = max(2, int(round(src.width * scale / 2)) * 2)
 fh = max(2, int(round(src.height * scale / 2)) * 2)
@@ -108,12 +111,7 @@ padded = (fw, fh) != (IN_W, IN_H)
 if padded:
     fit = core.std.AddBorders(fit, right=IN_W - fw, bottom=IN_H - fh)
 
-clean = core.trt.Model(fit, engine_path=ENGINE_CLEAN, num_streams=2)
-if DENOISE > 0:
-    wdn   = core.trt.Model(fit, engine_path=ENGINE_WDN, num_streams=2)
-    up    = core.std.Merge(clean, wdn, weight=[DENOISE])
-else:
-    up    = clean   # single-model fast path: double the realtime headroom
+up = core.trt.Model(fit, engine_path=ENGINE, num_streams=2)
 
 if padded:
     up = core.std.Crop(up, right=(IN_W - fw) * SCALE, bottom=(IN_H - fh) * SCALE)

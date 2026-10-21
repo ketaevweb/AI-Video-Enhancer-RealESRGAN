@@ -41,6 +41,15 @@
  SYNCED from GitHub main (source of truth) with local-copy fallback
  for offline machines, so re-running this installer always brings the
  current scripts - no more manual re-downloading of individual files.
+
+ PERF v6 (measured on RTX 3080, 720p source): x4v3 @ 960x540 in gave
+ only 7 fps in mpv; compute scales with model OUTPUT pixels, so the
+ realtime profiles now run 640x360-in engines that output 2560x1440
+ DIRECTLY (native 2K, no more internal 4K):
+   general -> realesr-animevideov3 @ 640x360  (~50 fps, measured base:
+   23 fps at 960x540), film -> x4v3 @ 640x360 (~15-20 fps detail mode),
+   anime and film-hd unchanged. Launchers also pass
+   --framedrop=decoder+vo so brief slowdowns no longer drift A/V.
 =====================================================================
 #>
 param(
@@ -589,25 +598,26 @@ if "%~1"=="" (
     pause
     exit /b 0
 )
-start "" "$mpvExe" --vf="vapoursynth=enhance-$profile.vpy:concurrent-frames=6" %*
+start "" "$mpvExe" --vf="vapoursynth=enhance-$profile.vpy:concurrent-frames=6" --framedrop=decoder+vo %*
 "@
 }
-# extra launcher: general + wdn denoise blend (two models per frame ~ half speed)
+# extra launcher: general profile alias (kept for backward compatibility)
 Write-Bat (Join-Path $Base 'watch-AI-general-denoise.bat') @"
 @echo off
-rem AI enhancer: general profile + wdn DENOISE blend (for old/noisy DVD-VHS rips)
-rem NOTE: runs two models per frame - roughly half the realtime speed.
+rem AI enhancer: general profile.
+rem PERF v6: the fast animevideov3 engine denoises compressed/old rips
+rem by itself, so the separate wdn blend is gone - this launcher is now
+rem identical to watch-AI-general.bat (kept so old shortcuts keep working).
 set "AIVH=$Base"
 $pathLine
 cd /d "%AIVH%"
-set "AIVH_DENOISE=0.5"
 if "%~1"=="" (
     echo Drag a movie file onto this .bat to watch it with AI enhancement.
     echo.
     pause
     exit /b 0
 )
-start "" "$mpvExe" --vf="vapoursynth=enhance-general.vpy:concurrent-frames=6" %*
+start "" "$mpvExe" --vf="vapoursynth=enhance-general.vpy:concurrent-frames=6" --framedrop=decoder+vo %*
 "@
 # debug launcher: visible console + full log, for diagnosing silent exits
 $mpvDebugExe = $mpvExe
@@ -625,7 +635,7 @@ echo === AI Video Enhancer debug launch ===
 echo mpv : "$mpvDebugExe"
 echo file: %*
 echo.
-"$mpvDebugExe" --vf="vapoursynth=enhance-general.vpy:concurrent-frames=6" --log-file="$LogsDir\mpv-debug.log" %*
+"$mpvDebugExe" --vf="vapoursynth=enhance-general.vpy:concurrent-frames=6" --framedrop=decoder+vo --log-file="$LogsDir\mpv-debug.log" %*
 echo.
 echo === mpv exit code: %ERRORLEVEL% ===
 echo log : $LogsDir\mpv-debug.log
@@ -650,12 +660,12 @@ Write-Host ' Setup complete.' -ForegroundColor Green
 Write-Host '=====================================================' -ForegroundColor Cyan
 Write-Host ''
 Write-Host '  How to watch:'
-Write-Host "    drag a movie onto  $Base\watch-AI-general.bat   (films - primary profile)"
-Write-Host "    or onto            $Base\watch-AI-anime.bat     (anime - fastest, also a safe fallback for films)"
-Write-Host "    noisy old rips     $Base\watch-AI-general-denoise.bat"
+Write-Host "    drag a movie onto  $Base\watch-AI-general.bat   (PRIMARY - ~50 fps, films and anime)"
+Write-Host "    or onto            $Base\watch-AI-film.bat      (detail mode ~15-20 fps, may drop on heavy scenes)"
+Write-Host "    or onto            $Base\watch-AI-anime.bat     (animation at maximum internal detail)"
 Write-Host "    nothing happens?   drag the movie onto $Base\watch-AI-debug.bat"
 Write-Host '                       (runs mpv with a visible console and opens the error log in Notepad)'
-Write-Host '  In-player hotkeys: Ctrl+a general | Ctrl+n anime | Ctrl+0 AI off'
+Write-Host '  In-player hotkeys: Ctrl+a general | Ctrl+f film | Ctrl+n anime | Ctrl+0 AI off'
 Write-Host '  Speed check  : powershell -ExecutionPolicy Bypass -File C:\AIVideoEnhancer\scripts\test-speed.ps1'
 Write-Host '  Rebuild      : powershell -ExecutionPolicy Bypass -File C:\AIVideoEnhancer\build-engines.ps1'
 Write-Host ''

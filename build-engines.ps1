@@ -141,9 +141,11 @@ $timingCache = Join-Path $EnginesDir 'timing.cache'
 $batch       = Join-Path $LogsDir  'run_trtexec.cmd'
 
 $engines = @(
-    @{ Model='realesr-general-x4v3';      Onnx='realesr-general-x4v3.onnx';      H=540; W=960;  Scale=4; Note='compact, denoise-capable (film/general)' },
-    @{ Model='realesr-general-wdn-x4v3';  Onnx='realesr-general-wdn-x4v3.onnx';  H=540; W=960;  Scale=4; Note='compact, denoise-only variant (mixed in enhance-general.vpy)' },
-    @{ Model='realesr-animevideov3';      Onnx='realesr-animevideov3.onnx';      H=540; W=960;  Scale=4; Note='compact, anime/video model' },
+    @{ Model='realesr-animevideov3';      Onnx='realesr-animevideov3.onnx';      H=360; W=640;  Scale=4; Note='compact, 2K realtime engine - PRIMARY (enhance-general.vpy)' },
+    @{ Model='realesr-general-x4v3';      Onnx='realesr-general-x4v3.onnx';      H=360; W=640;  Scale=4; Note='compact detail mode (enhance-film.vpy)' },
+    @{ Model='realesr-general-x4v3';      Onnx='realesr-general-x4v3.onnx';      H=540; W=960;  Scale=4; Note='compact, legacy 4K internal size (kept for film-hd fallback)' },
+    @{ Model='realesr-general-wdn-x4v3';  Onnx='realesr-general-wdn-x4v3.onnx';  H=540; W=960;  Scale=4; Note='compact, denoise-only variant (no longer used by realtime vpys)' },
+    @{ Model='realesr-animevideov3';      Onnx='realesr-animevideov3.onnx';      H=540; W=960;  Scale=4; Note='compact, anime/video model (enhance-anime.vpy)' },
     @{ Model='RealESRGAN_x4plus';         Onnx='RealESRGAN_x4plus.onnx';         H=540; W=960;  Scale=4; Note='RRDB, best detail for live-action (max quality SD path)' },
     @{ Model='RealESRGAN_x2plus';         Onnx='RealESRGAN_x2plus.onnx';         H=720; W=1280; Scale=2; Note='RRDB, 720p->1440p direct path (used by enhance-film-hd.vpy)'; Optional=$true }
 )
