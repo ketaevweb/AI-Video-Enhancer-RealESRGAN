@@ -451,39 +451,137 @@ if (Test-Path (Join-Path $ProjectRoot 'mpv')) {
     Copy-Item (Join-Path $ProjectRoot 'mpv\*') $MpvConfDir -Force -ErrorAction SilentlyContinue
 }
 Write-Ok "scripts copied to $Base"
-Write-Ok "mpv config examples copied to $MpvConfDir (they are NOT applied automatically)"
+Write-Ok "mpv config examples copied to $MpvConfDir"
 
-# launchers that work regardless of mpv config
+# ---------------------------------------------------------------------
+# 6a. mpv: find the binary and deploy portable_config next to it.
+#     mpv reads config ONLY from <mpv dir>\portable_config\ (or
+#     %APPDATA%\mpv) - conf files sitting directly next to mpv.exe are
+#     silently IGNORED, so hotkeys/auto-profile never loaded from there.
+# ---------------------------------------------------------------------
 $mpvExe = $null
-try { $mpvExe = (cmd /c 'where mpv.exe 2>nul') | Select-Object -First 1 } catch { }
-if (-not ($mpvExe -and (Test-Path $mpvExe))) {
-    foreach ($p in @("$Base\mpv\mpv.exe", "$Base\mpv\mpv.com")) { if (Test-Path $p) { $mpvExe = $p; break } }
+foreach ($p in @("$Base\mpv\mpv.exe", "$Base\mpv\mpv.com")) {
+    if (Test-Path $p) { $mpvExe = $p; break }
 }
+if (-not $mpvExe) {
+    try { $w = (cmd /c 'where mpv.exe 2>nul') | Select-Object -First 1 } catch { }
+    if ($w -and (Test-Path $w)) { $mpvExe = $w }
+}
+$mpvDir = "$Base\mpv"
 if ($mpvExe -and (Test-Path $mpvExe)) {
+    $mpvDir = Split-Path -Parent $mpvExe
     Write-Ok "mpv found: $mpvExe"
 } else {
-    Write-Wrn 'mpv.exe not found. Get the shinchiro build: https://mpv.io/installation/'
-    Write-Wrn 'Put mpv.exe anywhere on PATH (or C:\AIVideoEnhancer\mpv\) and re-run.'
-    $mpvExe = 'mpv'
+    $mpvExe = "$mpvDir\mpv.exe"
+    Write-Wrn "mpv.exe not found under $mpvDir and not on PATH."
+    Write-Wrn 'Get the shinchiro build: https://mpv.io/installation/'
+    Write-Wrn "Put mpv.exe into $mpvDir and re-run this installer."
+}
+
+$portable = Join-Path $mpvDir 'portable_config'
+New-Item -ItemType Directory -Path $portable -Force | Out-Null
+Copy-Item (Join-Path $ProjectRoot 'mpv\mpv.conf')   $portable -Force
+Copy-Item (Join-Path $ProjectRoot 'mpv\input.conf') $portable -Force
+foreach ($stale in @('mpv.conf', 'input.conf')) {
+    $sp = Join-Path $mpvDir $stale
+    if (Test-Path $sp) {
+        Remove-Item $sp -Force -ErrorAction SilentlyContinue
+        Write-Ok "removed stale $mpvDir\$stale (mpv only reads portable_config\)"
+    }
+}
+Write-Ok "mpv config deployed to $portable (hotkeys: Ctrl+a general / Ctrl+n anime / Ctrl+0 off)"
+
+# ---------------------------------------------------------------------
+# 6b. locate VSScript.dll (the runtime mpv loads for VapourSynth).
+#     The standalone installer / pip wheels do not always end up on the
+#     system PATH - mpv would exit instantly and silently without it.
+# ---------------------------------------------------------------------
+$vsCoreDir = $null
+$probeDirs = @()
+if ($vspipe) {
+    if ($vspipe -imatch '^(.*)\\bin\\vspipe\.exe$') {
+        $probeDirs += (Join-Path $Matches[1] 'core64')
+    }
+    if ($vspipe -imatch '^(.*)\\Scripts\\vspipe\.exe$') {
+        $probeDirs += (Join-Path (Split-Path -Parent $Matches[1]) 'Lib\site-packages\vapoursynth')
+    }
+}
+$probeDirs += "$env:ProgramFiles\VapourSynth\core64"
+foreach ($c in $probeDirs) {
+    if ($c -and (Test-Path (Join-Path $c 'VSScript.dll'))) { $vsCoreDir = $c; break }
+}
+if ($vsCoreDir) {
+    Write-Ok "VapourSynth runtime DLLs: $vsCoreDir"
+} else {
+    Write-Wrn 'VSScript.dll was not auto-located - launchers will rely on the system PATH.'
+}
+
+# ---------------------------------------------------------------------
+# 6c. launchers.
+#     FIX: the launchers cd into $Base first and pass a RELATIVE script
+#     path - no drive colon inside the filter value at all. A path like
+#     C:/... inside --vf collides with the ':' sub-option separator of
+#     the mpv filter parser; the filter fails to initialize and GUI-mpv
+#     exits instantly with no visible error ("drag does nothing").
+#     They also prepend the VapourSynth core dir to PATH so mpv always
+#     finds VSScript.dll.
+# ---------------------------------------------------------------------
+$pathLine = ''
+if ($vsCoreDir) {
+    $pathLine = "if exist `"$vsCoreDir\VSScript.dll`" set `"PATH=$vsCoreDir;%PATH%`""
+}
+function Write-Bat([string]$Path, [string]$Text) {
+    # normalize to CRLF: cmd.exe is picky with LF-only batch files
+    $Text = $Text -replace "(?<!`r)`n", "`r`n"
+    Set-Content -Path $Path -Value $Text -Encoding ASCII
 }
 foreach ($profile in @('film','film-hd','anime','general')) {
     $bat = Join-Path $Base "watch-AI-$profile.bat"
-    @"
+    Write-Bat $bat @"
 @echo off
-rem Play files with the AI enhancer ($profile profile)
-"$mpvExe" --vf="vapoursynth=C\:/AIVideoEnhancer/enhance-$profile.vpy:concurrent-frames=6" %*
-"@ | Set-Content -Path $bat -Encoding ASCII
+rem AI Video Enhancer - profile: $profile
+rem Drag a movie onto this file (or run: watch-AI-$profile.bat "D:\Films\movie.mkv")
+set "AIVH=$Base"
+$pathLine
+cd /d "%AIVH%"
+start "" "$mpvExe" --vf="vapoursynth=enhance-$profile.vpy:concurrent-frames=6" %*
+"@
 }
 # extra launcher: general + wdn denoise blend (two models per frame ~ half speed)
-$bat = Join-Path $Base 'watch-AI-general-denoise.bat'
-@"
+Write-Bat (Join-Path $Base 'watch-AI-general-denoise.bat') @"
 @echo off
 rem AI enhancer: general profile + wdn DENOISE blend (for old/noisy DVD-VHS rips)
 rem NOTE: runs two models per frame - roughly half the realtime speed.
+set "AIVH=$Base"
+$pathLine
+cd /d "%AIVH%"
 set "AIVH_DENOISE=0.5"
-"$mpvExe" --vf="vapoursynth=C\:/AIVideoEnhancer/enhance-general.vpy:concurrent-frames=6" %*
-"@ | Set-Content -Path $bat -Encoding ASCII
-Write-Ok 'launchers written: C:\AIVideoEnhancer\watch-AI-<profile>.bat'
+start "" "$mpvExe" --vf="vapoursynth=enhance-general.vpy:concurrent-frames=6" %*
+"@
+# debug launcher: visible console + full log, for diagnosing silent exits
+$mpvDebugExe = $mpvExe
+if (Test-Path (Join-Path $mpvDir 'mpv.com')) { $mpvDebugExe = Join-Path $mpvDir 'mpv.com' }
+Write-Bat (Join-Path $Base 'watch-AI-debug.bat') @"
+@echo off
+rem AI Video Enhancer - DEBUG launcher
+rem If the normal watch-AI-*.bat launchers exit without a window, drag the
+rem movie onto THIS file: it runs mpv with a visible console, saves a full
+rem log to $LogsDir\mpv-debug.log and opens it in Notepad.
+set "AIVH=$Base"
+$pathLine
+cd /d "%AIVH%"
+echo === AI Video Enhancer debug launch ===
+echo mpv : "$mpvDebugExe"
+echo file: %*
+echo.
+"$mpvDebugExe" --vf="vapoursynth=enhance-general.vpy:concurrent-frames=6" --log-file="$LogsDir\mpv-debug.log" %*
+echo.
+echo === mpv exit code: %ERRORLEVEL% ===
+echo log : $LogsDir\mpv-debug.log
+if exist "$LogsDir\mpv-debug.log" start "" notepad "$LogsDir\mpv-debug.log"
+pause
+"@
+Write-Ok 'launchers written: watch-AI-{general, anime, general-denoise, film, film-hd, debug}.bat'
 
 # ---------------------------------------------------------------------
 # 7. TensorRT engines
@@ -501,8 +599,12 @@ Write-Host ' Setup complete.' -ForegroundColor Green
 Write-Host '=====================================================' -ForegroundColor Cyan
 Write-Host ''
 Write-Host '  How to watch:'
-Write-Host '    - fastest way : double-click a movie onto C:\AIVideoEnhancer\watch-AI-general.bat'
-Write-Host '    - or add the [aivh] profiles from mpv-config\mpv.conf into your mpv conf'
+Write-Host "    drag a movie onto  $Base\watch-AI-general.bat   (films - primary profile)"
+Write-Host "    or onto            $Base\watch-AI-anime.bat     (anime - fastest, also a safe fallback for films)"
+Write-Host "    noisy old rips     $Base\watch-AI-general-denoise.bat"
+Write-Host "    nothing happens?   drag the movie onto $Base\watch-AI-debug.bat"
+Write-Host '                       (runs mpv with a visible console and opens the error log in Notepad)'
+Write-Host '  In-player hotkeys: Ctrl+a general | Ctrl+n anime | Ctrl+0 AI off'
 Write-Host '  Speed check  : powershell -ExecutionPolicy Bypass -File C:\AIVideoEnhancer\scripts\test-speed.ps1'
 Write-Host '  Rebuild      : powershell -ExecutionPolicy Bypass -File C:\AIVideoEnhancer\build-engines.ps1'
 Write-Host ''
