@@ -57,6 +57,7 @@ mpv ──► VapourSynth (.vpy) ──► vs-mlrt/vstrt (TensorRT fp16)
 
 * `C:\AIVideoEnhancer\watch-AI-general.bat` — фильмы (основной профиль: компактный x4v3, real-time)
 * `C:\AIVideoEnhancer\watch-AI-anime.bat` — аниме (самый быстрый, ~34 fps на RTX 3080)
+* `C:\AIVideoEnhancer\watch-AI-general-denoise.bat` — то же + шумодав (две модели на кадр, ~вдвое медленнее — для старых DVD/VHS-рипов)
 * `C:\AIVideoEnhancer\watch-AI-film.bat` / `watch-AI-film-hd.bat` — максимальное качество (RRDB x4plus/x2plus), но 2–5 fps — только для офлайн-рендера, не для просмотра
 
 Перетащите фильм на ярлык (или запустите: `watch-AI-general.bat "D:\Films\movie.mkv"`).
@@ -69,7 +70,7 @@ mpv ──► VapourSynth (.vpy) ──► vs-mlrt/vstrt (TensorRT fp16)
 
 | Профиль | Модель | Сеть | Для чего |
 |---|---|---|---|
-| `general` | realesr-general-x4v3 + wdn | SRVGGNet | **Основной для фильмов**: старые/шумные источники, real-time (~22 fps на RTX 3080); чистая модель + шумодав смешиваются (сила — константа `DENOISE` в `enhance-general.vpy`, 0…1) |
+| `general` | realesr-general-x4v3 (+ wdn по желанию) | SRVGGNet | **Основной для фильмов**: real-time. По умолчанию одна чистая модель; шумодав включается лаунчером `watch-AI-general-denoise.bat` или переменной окружения `AIVH_DENOISE=0.5` (0…1) — но удваивает время кадра |
 | `anime` | realesr-animevideov3 | SRVGGNet | Аниме и самый быстрый профиль (~34 fps): без «дыхания» деталей между кадрами |
 | `film` | RealESRGAN_x4plus | RRDBNet | Максимальное восстановление детальности, но ~2 fps — только офлайн-рендер |
 | `film-hd` | RealESRGAN_x2plus | RRDBNet | 720p → 1440p офлайн, ~5 fps — только офлайн-рендер |

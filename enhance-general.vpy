@@ -1,11 +1,16 @@
 # -*- coding: utf-8 -*-
 # =====================================================================
-#  enhance-general.vpy - realesr-general-x4v3 + wdn mix for mpv
-#  Best for old/noisy sources (DVD rips, VHS transfers, bad encodes):
-#  the clean model restores detail, the "wdn" model removes noise,
-#  the two outputs are blended for smooth, TV-like noise control.
+#  enhance-general.vpy - realesr-general-x4v3 (+ optional wdn denoise)
+#  PRIMARY realtime profile for live-action films.
 #
-#  DENOISE: 0.0 = pure sharpening (no denoise) ... 1.0 = max denoise
+#  Default: ONLY the clean model runs - the fastest path (~30 fps class
+#  on RTX 3080). The optional "wdn" denoise blend removes heavy noise
+#  from old DVD/VHS rips but runs a SECOND model per frame, halving the
+#  realtime speed. Enable it via:
+#    - watch-AI-general-denoise.bat launcher, or
+#    - environment variable: set AIVH_DENOISE=0.5 before starting mpv
+#
+#  DENOISE: 0.0 = pure sharpening (no denoise, fast) ... 1.0 = max denoise
 #  0.5 is a good starting point for DVD-quality sources.
 # =====================================================================
 import os
@@ -15,7 +20,7 @@ from vapoursynth import core
 BASE = r"C:\AIVideoEnhancer"
 ENGINE_CLEAN = os.path.join(BASE, "engines", "realesr-general-x4v3_1x3x540x960_fp16.engine")
 ENGINE_WDN   = os.path.join(BASE, "engines", "realesr-general-wdn-x4v3_1x3x540x960_fp16.engine")
-DENOISE = 0.5          # adjust 0.0 - 1.0 to taste
+DENOISE = float(os.environ.get("AIVH_DENOISE", "0"))   # 0 = fastest single-model path; try 0.5 for noisy rips
 IN_W    = 960
 IN_H    = 540
 SCALE   = 4
@@ -110,9 +115,12 @@ padded = (fw, fh) != (IN_W, IN_H)
 if padded:
     fit = core.std.AddBorders(fit, right=IN_W - fw, bottom=IN_H - fh)
 
-clean = core.trt.Model(fit, engine_path=ENGINE_CLEAN, num_streams=2, use_cuda_graph=True)
-wdn   = core.trt.Model(fit, engine_path=ENGINE_WDN, num_streams=2, use_cuda_graph=True)
-up    = core.std.Merge(clean, wdn, weight=[DENOISE])
+clean = core.trt.Model(fit, engine_path=ENGINE_CLEAN, num_streams=2)
+if DENOISE > 0:
+    wdn   = core.trt.Model(fit, engine_path=ENGINE_WDN, num_streams=2)
+    up    = core.std.Merge(clean, wdn, weight=[DENOISE])
+else:
+    up    = clean   # single-model fast path: double the realtime headroom
 
 if padded:
     up = core.std.Crop(up, right=(IN_W - fw) * SCALE, bottom=(IN_H - fh) * SCALE)

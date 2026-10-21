@@ -474,6 +474,15 @@ rem Play files with the AI enhancer ($profile profile)
 "$mpvExe" --vf="vapoursynth=C\:/AIVideoEnhancer/enhance-$profile.vpy:concurrent-frames=6" %*
 "@ | Set-Content -Path $bat -Encoding ASCII
 }
+# extra launcher: general + wdn denoise blend (two models per frame ~ half speed)
+$bat = Join-Path $Base 'watch-AI-general-denoise.bat'
+@"
+@echo off
+rem AI enhancer: general profile + wdn DENOISE blend (for old/noisy DVD-VHS rips)
+rem NOTE: runs two models per frame - roughly half the realtime speed.
+set "AIVH_DENOISE=0.5"
+"$mpvExe" --vf="vapoursynth=C\:/AIVideoEnhancer/enhance-general.vpy:concurrent-frames=6" %*
+"@ | Set-Content -Path $bat -Encoding ASCII
 Write-Ok 'launchers written: C:\AIVideoEnhancer\watch-AI-<profile>.bat'
 
 # ---------------------------------------------------------------------
@@ -492,7 +501,7 @@ Write-Host ' Setup complete.' -ForegroundColor Green
 Write-Host '=====================================================' -ForegroundColor Cyan
 Write-Host ''
 Write-Host '  How to watch:'
-Write-Host '    - fastest way : double-click a movie onto C:\AIVideoEnhancer\watch-AI-film.bat'
+Write-Host '    - fastest way : double-click a movie onto C:\AIVideoEnhancer\watch-AI-general.bat'
 Write-Host '    - or add the [aivh] profiles from mpv-config\mpv.conf into your mpv conf'
 Write-Host '  Speed check  : powershell -ExecutionPolicy Bypass -File C:\AIVideoEnhancer\scripts\test-speed.ps1'
 Write-Host '  Rebuild      : powershell -ExecutionPolicy Bypass -File C:\AIVideoEnhancer\build-engines.ps1'
