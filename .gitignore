@@ -1,0 +1,18 @@
+# runtime artifacts - never commit
+*.engine
+*.7z
+timing.cache
+logs/
+download/
+_mlrt_extract/
+7zr.exe
+*.part
+
+# heavy RRDB models are downloaded by install.ps1, not stored here
+models/RealESRGAN_x4plus.onnx
+models/RealESRGAN_x2plus.onnx
+models/*.fp16.onnx
+
+# python
+__pycache__/
+*.pyc
