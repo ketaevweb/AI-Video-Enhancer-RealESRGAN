@@ -126,14 +126,16 @@ if padded:
 # ---------------------------------------------------------------------
 # 4. "Honest" Real-ESRGAN inference on the GPU (TensorRT, fp16)
 # ---------------------------------------------------------------------
-up = core.trt.Model(fit, engine_path=ENGINE)
+up = core.trt.Model(fit, engine_path=ENGINE, num_streams=2)
 
 if padded:
     up = core.std.Crop(up, right=(IN_W - fw) * SCALE, bottom=(IN_H - fh) * SCALE)
 
 # ---------------------------------------------------------------------
-# 5. Back to YUV for mpv. Keep the source matrix/range; go to 10-bit so
-#    mpv can dither on output instead of hard 8-bit banding.
+# 5. Output packed RGB24 (full range). mpv's renderer converts to RGB on
+#    the GPU anyway, so a CPU YUV round-trip here is pure waste - at 4K
+#    it cost more than the GPU inference itself. Ordered dither kills
+#    the banding that raw 8-bit truncation would cause.
 # ---------------------------------------------------------------------
-out = core.resize.Bicubic(up, format=vs.YUV420P10, matrix_s=mat, range_s=rng)
+out = core.resize.Bicubic(up, format=vs.RGB24, dither_type="ordered")
 out.set_output()

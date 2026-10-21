@@ -103,10 +103,12 @@ padded = (fw, fh) != (IN_W, IN_H)
 if padded:
     fit = core.std.AddBorders(fit, right=IN_W - fw, bottom=IN_H - fh)
 
-up = core.trt.Model(fit, engine_path=ENGINE)
+up = core.trt.Model(fit, engine_path=ENGINE, num_streams=2)
 
 if padded:
     up = core.std.Crop(up, right=(IN_W - fw) * SCALE, bottom=(IN_H - fh) * SCALE)
 
-out = core.resize.Bicubic(up, format=vs.YUV420P10, matrix_s=mat, range_s=rng)
+# RGB24 out (full range): mpv converts to RGB on the GPU anyway, so a CPU
+# YUV round-trip here is pure waste. Ordered dither prevents banding.
+out = core.resize.Bicubic(up, format=vs.RGB24, dither_type="ordered")
 out.set_output()
