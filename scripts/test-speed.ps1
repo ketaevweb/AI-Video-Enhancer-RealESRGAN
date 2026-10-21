@@ -94,7 +94,9 @@ if not hasattr(core, 'trt'):
 
 clip = core.std.BlankClip(width=$W, height=$H, format=vs.RGBS, fpsnum=24000, fpsden=1001, length=240)
 up = core.trt.Model(clip, engine_path="$engineEsc")
-core.resize.Bicubic(up, format=vs.YUV420P8).set_output()
+# RGB -> YUV needs an explicit matrix (same as the real .vpy pipelines,
+# which output YUV420P10 with the source colour matrix).
+core.resize.Bicubic(up, format=vs.YUV420P10, matrix_s="709").set_output()
 "@ | Set-Content -Path $benchVpy -Encoding UTF8
 
     $errLog = Join-Path $LogsDir 'benchmark.err.log'
