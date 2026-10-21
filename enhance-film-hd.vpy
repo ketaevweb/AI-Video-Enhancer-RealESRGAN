@@ -128,7 +128,7 @@ padded = (fw, fh) != (IN_W, IN_H)
 if padded:
     fit = core.std.AddBorders(fit, right=IN_W - fw, bottom=IN_H - fh)
 
-up = core.trt.Model(fit, engine_path=ENGINE, num_streams=2)
+up = core.trt.Model(fit, engine_path=ENGINE, num_streams=2, use_cuda_graph=True)
 
 if padded:
     up = core.std.Crop(up, right=(IN_W - fw) * SCALE, bottom=(IN_H - fh) * SCALE)

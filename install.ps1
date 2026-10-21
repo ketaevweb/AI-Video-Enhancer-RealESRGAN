@@ -471,7 +471,7 @@ foreach ($profile in @('film','film-hd','anime','general')) {
     @"
 @echo off
 rem Play files with the AI enhancer ($profile profile)
-"$mpvExe" --vf="vapoursynth=C\:/AIVideoEnhancer/enhance-$profile.vpy" %*
+"$mpvExe" --vf="vapoursynth=C\:/AIVideoEnhancer/enhance-$profile.vpy:concurrent-frames=6" %*
 "@ | Set-Content -Path $bat -Encoding ASCII
 }
 Write-Ok 'launchers written: C:\AIVideoEnhancer\watch-AI-<profile>.bat'

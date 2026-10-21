@@ -55,25 +55,26 @@ mpv ──► VapourSynth (.vpy) ──► vs-mlrt/vstrt (TensorRT fp16)
 
 **Способ 1 — ярлыки (ничего настраивать не надо):**
 
-* `C:\AIVideoEnhancer\watch-AI-film.bat` — фильмы (максимальное качество, x4plus)
-* `C:\AIVideoEnhancer\watch-AI-film-hd.bat` — 720p-источники напрямую в 1440p (x2plus)
-* `C:\AIVideoEnhancer\watch-AI-anime.bat` — аниме
-* `C:\AIVideoEnhancer\watch-AI-general.bat` — старые/шумные DVD-рипы
+* `C:\AIVideoEnhancer\watch-AI-general.bat` — фильмы (основной профиль: компактный x4v3, real-time)
+* `C:\AIVideoEnhancer\watch-AI-anime.bat` — аниме (самый быстрый, ~34 fps на RTX 3080)
+* `C:\AIVideoEnhancer\watch-AI-film.bat` / `watch-AI-film-hd.bat` — максимальное качество (RRDB x4plus/x2plus), но 2–5 fps — только для офлайн-рендера, не для просмотра
 
-Перетащите фильм на ярлык (или запустите: `watch-AI-film.bat "D:\ Films\movie.mkv"`).
+Перетащите фильм на ярлык (или запустите: `watch-AI-general.bat "D:\Films\movie.mkv"`).
 
 **Способ 2 — профили mpv (автомат для всей коллекции):**
 
-Возьмите блоки `[aivh-sd]` и `[aivh-hd]` из `C:\AIVideoEnhancer\mpv-config\mpv.conf` и добавьте в свой `mpv.conf`. После этого любой SD/720p-файл, открытый обычным mpv, усиливается сам, а 1080p+ воспроизводится без изменений.
+Возьмите блок `[aivh-sd]` из `C:\AIVideoEnhancer\mpv-config\mpv.conf` и добавьте в свой `mpv.conf`. После этого любой SD/720p-файл, открытый обычным mpv, усиливается сам, а 1080p+ воспроизводится без изменений.
 
 ## Выбор модели
 
 | Профиль | Модель | Сеть | Для чего |
 |---|---|---|---|
-| `film` | RealESRGAN_x4plus | RRDBNet | Лучшее восстановление детальности для «живых» фильмов (максимальное качество) |
-| `film-hd` | RealESRGAN_x2plus | RRDBNet | 720p → 1440p напрямую, без приведения к 540p — максимум сохранённой детальности для HD-источников |
-| `anime` | realesr-animevideov3 | SRVGGNet | Аниме: быстро и без «дыхания» деталей между кадрами |
-| `general` | realesr-general-x4v3 + wdn | SRVGGNet | Старые/шумные источники: чистая модель + модель-шумодав смешиваются (сила — константа `DENOISE` в `enhance-general.vpy`, 0…1) |
+| `general` | realesr-general-x4v3 + wdn | SRVGGNet | **Основной для фильмов**: старые/шумные источники, real-time (~22 fps на RTX 3080); чистая модель + шумодав смешиваются (сила — константа `DENOISE` в `enhance-general.vpy`, 0…1) |
+| `anime` | realesr-animevideov3 | SRVGGNet | Аниме и самый быстрый профиль (~34 fps): без «дыхания» деталей между кадрами |
+| `film` | RealESRGAN_x4plus | RRDBNet | Максимальное восстановление детальности, но ~2 fps — только офлайн-рендер |
+| `film-hd` | RealESRGAN_x2plus | RRDBNet | 720p → 1440p офлайн, ~5 fps — только офлайн-рендер |
+
+Скорость зависит от GPU: ориентируйтесь на вердикты `test-speed.ps1`. Профили `film`/`film-hd` существуют для офлайн-обработки любимых фильмов (ночная пакетная перекодировка).
 
 ## Диагностика
 

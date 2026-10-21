@@ -110,8 +110,8 @@ padded = (fw, fh) != (IN_W, IN_H)
 if padded:
     fit = core.std.AddBorders(fit, right=IN_W - fw, bottom=IN_H - fh)
 
-clean = core.trt.Model(fit, engine_path=ENGINE_CLEAN, num_streams=2)
-wdn   = core.trt.Model(fit, engine_path=ENGINE_WDN, num_streams=2)
+clean = core.trt.Model(fit, engine_path=ENGINE_CLEAN, num_streams=2, use_cuda_graph=True)
+wdn   = core.trt.Model(fit, engine_path=ENGINE_WDN, num_streams=2, use_cuda_graph=True)
 up    = core.std.Merge(clean, wdn, weight=[DENOISE])
 
 if padded:
