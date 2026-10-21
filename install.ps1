@@ -166,8 +166,9 @@ if ($vspipe) {
 # "Plugin ... uses API 3, which is no longer supported".
 function Get-VsVersion {
     try {
-        $line = (cmd /c "`"$vspipe`" --version 2>nul") | Select-Object -First 1
-        if ($line -match 'R(\d+)') { return [int]$Matches[1] }
+        # scan the WHOLE output: some builds put the version string not on the first line
+        $txt = (cmd /c "`"$vspipe`" --version 2>nul") -join "`n"
+        if ($txt -match 'R(\d+)') { return [int]$Matches[1] }
     } catch { }
     return $null
 }

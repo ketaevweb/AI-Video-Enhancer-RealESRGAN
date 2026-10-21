@@ -1,4 +1,4 @@
-﻿#requires -version 5.1
+#requires -version 5.1
 <#
 =====================================================================
  AI Video Enhancer - TensorRT engine builder (Real-ESRGAN realtime)
@@ -8,18 +8,28 @@
  PowerShell (with $ErrorActionPreference='Stop') treats redirected
  stderr of native executables as terminating errors.
 
- The message "Could not read cache from ...timing.cache" is a normal
- first-run WARNING, not a failure.
-
- This version runs trtexec via Start-Process with stdout/stderr
- redirected to log files and decides success ONLY by the process
- exit code. It is fully resumable: finished engines are skipped.
-
  FIX v3: trtexec flags aligned with the official vstrt documentation
  (AmusementClub/vs-mlrt, vstrt/README.md): a static engine is built
  with --minShapes/--optShapes/--maxShapes all equal (input:1x3xHxW)
  and the timing cache flag is --timingCacheFile (the previous
  --shapes= / --timingCache= spellings do not exist in trtexec).
+
+ FIX v4: bulletproof success detection. PowerShell 5.1's
+ Start-Process -PassThru sometimes reports Process.ExitCode as $null
+ even for a finished process - the v3 run therefore logged
+ "(trtexec exit code )" and declared successful builds failed, then
+ retried WITHOUT shapes, which made TensorRT silently override the
+ input to a useless 1x3x1x1. Now:
+   - trtexec is started through a small cmd wrapper that writes the
+     real %ERRORLEVEL% into a status file (no .NET exit code involved);
+   - BOTH attempts keep the correct static shape (a retry without
+     shapes can only produce a broken engine and is never done);
+   - each attempt gets its own out/err logs (nothing is overwritten);
+   - the engine is written to <name>.part and renamed on success, and
+     a <name>.ok marker proves it was built by this script version;
+     unmarked engine files (e.g. left over from the broken v3 run)
+     are rebuilt automatically;
+   - on failure the actual [E] lines from the trtexec log are shown.
 =====================================================================
 #>
 [CmdletBinding()]
@@ -27,7 +37,7 @@ param(
     [string]$Base = 'C:\AIVideoEnhancer',
     # Skip the heavy RRDB x2plus engine (720p HD path falls back to the 540p engine automatically)
     [switch]$Minimal,
-    # Rebuild engines even if a finished engine file already exists
+    # Rebuild engines even if a marker-verified engine file already exists
     [switch]$Force
 )
 
@@ -113,18 +123,29 @@ Set-Content -Path (Join-Path $Base 'trtexec.path.txt') -Value $trtexec -Encoding
 Write-Host ''
 
 # ------------------------------------------------------------------
-# 2. Engine matrix
+# 2. Housekeeping: stale partial engines and orphan trust markers
+# ------------------------------------------------------------------
+Get-ChildItem $EnginesDir -Filter '*.engine.part' -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+Get-ChildItem $EnginesDir -Filter '*.engine.ok' -ErrorAction SilentlyContinue | ForEach-Object {
+    $eng = $_.FullName.Substring(0, $_.FullName.Length - 3)   # strip '.ok'
+    if (-not (Test-Path $eng)) { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
+}
+
+# ------------------------------------------------------------------
+# 3. Engine matrix
 #    Order: compact models first (fast), heavy RRDB last.
 #    Every engine: static shape 1x3xHxW, fp16.
 # ------------------------------------------------------------------
 $timingCache = Join-Path $EnginesDir 'timing.cache'
+$batch       = Join-Path $LogsDir  'run_trtexec.cmd'
 
 $engines = @(
-    @{ Model='realesr-general-x4v3';      Onnx='realesr-general-x4v3.onnx';      H=540; W=960;  Note='compact, denoise-capable (film/general)' },
-    @{ Model='realesr-general-wdn-x4v3';  Onnx='realesr-general-wdn-x4v3.onnx';  H=540; W=960;  Note='compact, denoise-only variant (mixed in enhance-general.vpy)' },
-    @{ Model='realesr-animevideov3';      Onnx='realesr-animevideov3.onnx';      H=540; W=960;  Note='compact, anime/video model' },
-    @{ Model='RealESRGAN_x4plus';         Onnx='RealESRGAN_x4plus.onnx';         H=540; W=960;  Note='RRDB, best detail for live-action (max quality SD path)' },
-    @{ Model='RealESRGAN_x2plus';         Onnx='RealESRGAN_x2plus.onnx';         H=720; W=1280; Note='RRDB, 720p->1440p direct path (used by enhance-film-hd.vpy)'; Optional=$true }
+    @{ Model='realesr-general-x4v3';      Onnx='realesr-general-x4v3.onnx';      H=540; W=960;  Scale=4; Note='compact, denoise-capable (film/general)' },
+    @{ Model='realesr-general-wdn-x4v3';  Onnx='realesr-general-wdn-x4v3.onnx';  H=540; W=960;  Scale=4; Note='compact, denoise-only variant (mixed in enhance-general.vpy)' },
+    @{ Model='realesr-animevideov3';      Onnx='realesr-animevideov3.onnx';      H=540; W=960;  Scale=4; Note='compact, anime/video model' },
+    @{ Model='RealESRGAN_x4plus';         Onnx='RealESRGAN_x4plus.onnx';         H=540; W=960;  Scale=4; Note='RRDB, best detail for live-action (max quality SD path)' },
+    @{ Model='RealESRGAN_x2plus';         Onnx='RealESRGAN_x2plus.onnx';         H=720; W=1280; Scale=2; Note='RRDB, 720p->1440p direct path (used by enhance-film-hd.vpy)'; Optional=$true }
 )
 
 $built = 0; $skipped = 0; $failed = 0
@@ -139,11 +160,13 @@ foreach ($e in $engines) {
     $onnxPath   = Join-Path $ModelsDir $e.Onnx
     $engineName = '{0}_1x3x{1}x{2}_fp16.engine' -f $e.Model, $e.H, $e.W
     $enginePath = Join-Path $EnginesDir $engineName
+    $enginePart = "$enginePath.part"
+    $engineMark = "$enginePath.ok"
     $shape      = 'input:1x3x{0}x{1}' -f $e.H, $e.W
 
     Write-Host '-------------------------------------------------------------------'
     Write-Host ('  Model : {0}  ({1})' -f $e.Model, $e.Note)
-    Write-Host ('  Shape : {0}   ->   output {1}x{2}' -f $shape, ($e.W * 4), ($e.H * 4))
+    Write-Host ('  Shape : {0}   ->   output {1}x{2}' -f $shape, ($e.W * $e.Scale), ($e.H * $e.Scale))
 
     if (-not (Test-Path $onnxPath)) {
         Write-Bad "ONNX model missing: $onnxPath"
@@ -152,86 +175,111 @@ foreach ($e in $engines) {
         continue
     }
 
-    # skip only real, previously finished engines (partial files are rebuilt)
-    if ((Test-Path $enginePath) -and ((Get-Item $enginePath).Length -gt 1MB)) {
-        if ($Force) { Write-Wrn 'engine exists but -Force given -> rebuilding' }
-        else { Write-Ok "engine already built ($engineName)"; $skipped++; continue }
+    # skip only engines that this script built and verified itself
+    if ((Test-Path $enginePath) -and (Test-Path $engineMark) -and (-not $Force)) {
+        Write-Ok "engine already built ($engineName)"; $skipped++; continue
     }
+    if (Test-Path $enginePath) {
+        Write-Wrn 'engine file exists but has no trust marker (leftover from a broken build) - rebuilding it'
+        Remove-Item $enginePath -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item $engineMark -Force -ErrorAction SilentlyContinue
+    Remove-Item $enginePart -Force -ErrorAction SilentlyContinue
 
     $isRRDB = $e.Model -like 'RealESRGAN*'
     $eta    = if ($isRRDB) { 'RRDB network: expect 5-15 minutes' } else { 'compact network: expect 1-5 minutes' }
     Write-Host "  Build : $eta - this window may look frozen, that is normal."
-    Write-Host "  Logs  : $LogsDir\build_$($e.Model).log"
 
-    $outLog = Join-Path $LogsDir "build_$($e.Model).out.log"
-    $errLog = Join-Path $LogsDir "build_$($e.Model).err.log"
-    if (Test-Path $outLog) { Remove-Item $outLog -Force -ErrorAction SilentlyContinue }
-    if (Test-Path $errLog) { Remove-Item $errLog -Force -ErrorAction SilentlyContinue }
-
-    # ---- attempt 1: with static shapes + timing cache --------------
-    # (official vstrt docs: minShapes/optShapes/maxShapes + timingCacheFile;
-    #  all three shapes equal -> a static engine locked to 1x3xHxW)
-    $argStr = "--onnx=""$onnxPath"" --fp16 --saveEngine=""$enginePath"" " +
-              "--minShapes=$shape --optShapes=$shape --maxShapes=$shape " +
-              "--timingCacheFile=""$timingCache"" " +
-              "--memPoolSize=workspace:2048"
+    # Both attempts keep the CORRECT static shape. A retry without shapes
+    # makes TensorRT override the input to 1x3x1x1 (useless engine).
+    $common = "--onnx=""$onnxPath"" --fp16 --minShapes=$shape --optShapes=$shape --maxShapes=$shape --memPoolSize=workspace:2048"
+    $attempts = @(
+        "$common --saveEngine=""$enginePart"" --timingCacheFile=""$timingCache""",
+        "$common --saveEngine=""$enginePart"""
+    )
 
     $ok = $false
-    $p  = $null
-    foreach ($attempt in 1, 2) {
+    for ($i = 1; $i -le 2; $i++) {
+        $outLog = Join-Path $LogsDir ("build_{0}.a{1}.out.log" -f $e.Model, $i)
+        $errLog = Join-Path $LogsDir ("build_{0}.a{1}.err.log" -f $e.Model, $i)
+        $status = Join-Path $LogsDir ("build_{0}.a{1}.code"   -f $e.Model, $i)
+        foreach ($f in @($outLog, $errLog, $status)) { Remove-Item $f -Force -ErrorAction SilentlyContinue }
+
+        if ($i -eq 2) {
+            Write-Wrn 'retrying WITHOUT the timing cache (in case the cache file is stale/corrupt)...'
+            Remove-Item $timingCache -Force -ErrorAction SilentlyContinue
+        }
+
+        # cmd wrapper: trtexec exit code -> status file. This does NOT rely
+        # on .NET Process.ExitCode, which PowerShell 5.1 sometimes reports
+        # as $null even for a finished process.
+        $trtLine = '"{0}" {1} >"{2}" 2>"{3}"' -f $trtexec, $attempts[$i-1], $outLog, $errLog
+        Set-Content -Path $batch -Value @("@echo off", $trtLine, "echo %ERRORLEVEL% >""$status""") -Encoding ASCII
+
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $p  = Start-Process -FilePath $trtexec -ArgumentList $argStr -NoNewWindow -PassThru `
-                            -RedirectStandardOutput $outLog -RedirectStandardError $errLog
-        # heartbeat while trtexec works (all its output goes to the logs)
-        while (-not $p.HasExited) {
+        $p  = Start-Process -FilePath $env:ComSpec -ArgumentList "/c `"$batch`"" -WindowStyle Hidden -PassThru
+        while (-not $p.HasExited -and -not (Test-Path $status)) {
             Start-Sleep -Seconds 15
-            if (-not $p.HasExited) {
+            if (-not $p.HasExited -and -not (Test-Path $status)) {
                 Write-Host ('    ... building {0:mm\:ss}' -f $sw.Elapsed)
             }
         }
         $p.WaitForExit()
         $sw.Stop()
 
-        if ($p.ExitCode -eq 0) {
+        $code = $null
+        if (Test-Path $status) {
+            $code = (Get-Content $status -TotalCount 1 -ErrorAction SilentlyContinue | Select-Object -First 1).Trim()
+        }
+        if (-not $code) {
+            if ($null -ne $p.ExitCode) { $code = "$($p.ExitCode)" } else { $code = 'unknown' }
+        }
+
+        if ($code -eq '0' -and (Test-Path $enginePart) -and ((Get-Item $enginePart).Length -gt 1MB)) {
+            Move-Item $enginePart $enginePath -Force
+            Set-Content -Path $engineMark -Value ("ok {0}" -f (Get-Date -Format s)) -Encoding ASCII
+            $sz = [math]::Round((Get-Item $enginePath).Length / 1MB, 1)
+            Write-Ok ("engine built in {0:mm\:ss}  ({1}, {2} MB)" -f $sw.Elapsed, $engineName, $sz)
             $ok = $true
-            Write-Ok ("engine built in {0:mm\:ss}" -f $sw.Elapsed)
             break
         }
 
-        # attempt 2: drop --shapes (covers ONNX files that already carry static dims)
-        if ($attempt -eq 1) {
-            Write-Wrn 'trtexec failed, retrying once WITHOUT --shapes and WITHOUT timing cache...'
-            if (Test-Path $timingCache) { Remove-Item $timingCache -Force -ErrorAction SilentlyContinue }
-            $argStr = "--onnx=""$onnxPath"" --fp16 --saveEngine=""$enginePath"" --memPoolSize=workspace:2048"
-            continue
+        Write-Wrn ("trtexec attempt {0} reported exit code {1} after {2:mm\:ss}" -f $i, $code, $sw.Elapsed)
+        $errLines = @()
+        foreach ($lg in @($errLog, $outLog)) {
+            if (Test-Path $lg) {
+                $errLines += Select-String -Path $lg -Pattern '\[E\]' -ErrorAction SilentlyContinue |
+                             ForEach-Object { $_.Line }
+            }
+        }
+        if ($errLines.Count -gt 0) {
+            Write-Host '    Errors reported by trtexec:'
+            $errLines | Select-Object -Last 8 | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkGray }
+        } else {
+            Write-Host '    Last lines of the error log:'
+            if (Test-Path $errLog) { Get-Content $errLog -Tail 10 | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkGray } }
+            else { Write-Host '      (no error log produced)' }
         }
     }
 
     if ($ok) {
         $built++
-        $sz = [math]::Round((Get-Item $enginePath).Length / 1MB, 1)
-        Write-Ok "$engineName  ($sz MB)"
     } else {
         $failed++; $failedNames += $e.Model
-        Write-Bad "Engine build FAILED for $($e.Model) (trtexec exit code $($p.ExitCode))."
-        Write-Host '    Last lines of the error log:'
-        if (Test-Path $errLog) {
-            Get-Content $errLog -Tail 15 | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkGray }
-        } else {
-            Write-Host '      (no error log produced)'
-        }
+        Remove-Item $enginePart -Force -ErrorAction SilentlyContinue
     }
     Write-Host ''
 }
 
 # ------------------------------------------------------------------
-# 3. Summary
+# 4. Summary
 # ------------------------------------------------------------------
 Write-Host '====================================================='
 Write-Ok ("finished: {0} built, {1} skipped, {2} failed" -f $built, $skipped, $failed)
 if ($failedNames.Count -gt 0) {
     Write-Bad ('failed engines: {0}' -f ($failedNames -join ', '))
-    Write-Host '    Check the logs in' -NoNewline; Write-Host " $LogsDir" -ForegroundColor Yellow
+    Write-Host '    Check the per-attempt logs in' -NoNewline; Write-Host " $LogsDir" -ForegroundColor Yellow
+    Write-Host '    (build_<model>.a1.err.log / .a2.err.log - attempt 1 = with timing cache, attempt 2 = without)'
     Write-Host '    You can simply re-run this script - finished engines are skipped.'
     exit 1
 }
