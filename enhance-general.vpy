@@ -85,20 +85,13 @@ for eng in (ENGINE_CLEAN, ENGINE_WDN):
 
 src = video_in
 
-frame = src.get_frame(0)
-props = frame.props
-
-
-def _pi(key, default):
-    try:
-        return int(props[key])
-    except Exception:
-        return default
-
-
-matrix = _pi("_Matrix", 1)
-mat = {1: "709", 5: "470bg", 6: "470bg", 7: "240m", 9: "2020ncl"}.get(matrix, "709")
-rng = "full" if _pi("_ColorRange", 1) == 0 else "limited"
+# mpv's vf_vapoursynth forbids pulling frames during script evaluation
+# ("Frame requested during init!" -> black dummy frame), so the color
+# matrix is derived from the resolution instead of per-frame props:
+#   < 600 lines (480p/576p DVD-era rips) -> BT.601,   720p+ -> BT.709
+# This matches virtually every movie rip in existence.
+mat = "709" if src.height >= 600 else "470bg"
+rng = "limited"   # YUV handed over by mpv is virtually always limited range
 
 if src.format.color_family == vs.RGB:
     rgb = core.resize.Bicubic(src, format=vs.RGBS)
@@ -125,7 +118,11 @@ else:
 if padded:
     up = core.std.Crop(up, right=(IN_W - fw) * SCALE, bottom=(IN_H - fh) * SCALE)
 
-# RGB24 out (full range): mpv converts to RGB on the GPU anyway, so a CPU
-# YUV round-trip here is pure waste. Ordered dither prevents banding.
-out = core.resize.Bicubic(up, format=vs.RGB24, dither_type="ordered")
+# YUV420P10 out (limited range): mpv's vf_vapoursynth accepts YUV output
+# ONLY - a script returning RGB fails filter init ("Unsupported output
+# format") and mpv silently disables the AI. zimg converts the model's
+# float RGB to 10-bit YUV with ordered dither; gpu-next renders it as-is.
+out = core.resize.Bicubic(
+    up, format=vs.YUV420P10, matrix_s=mat, range_s="limited",
+    dither_type="ordered")
 out.set_output()

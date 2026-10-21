@@ -94,9 +94,11 @@ if not hasattr(core, 'trt'):
 
 clip = core.std.BlankClip(width=$W, height=$H, format=vs.RGBS, fpsnum=24000, fpsden=1001, length=240)
 up = core.trt.Model(clip, engine_path="$engineEsc", num_streams=2)
-# Mirror the real .vpy pipelines: packed RGB24 out, no CPU YUV round-trip
-# (mpv converts to RGB on the GPU anyway).
-core.resize.Bicubic(up, format=vs.RGB24, dither_type="ordered").set_output()
+# Mirror the real .vpy pipelines: YUV420P10 out - mpv's vf_vapoursynth
+# accepts YUV output ONLY, RGB fails filter init inside mpv.
+core.resize.Bicubic(
+    up, format=vs.YUV420P10, matrix_s="709", range_s="limited",
+    dither_type="ordered").set_output()
 "@ | Set-Content -Path $benchVpy -Encoding UTF8
 
     $errLog = Join-Path $LogsDir 'benchmark.err.log'

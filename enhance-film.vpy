@@ -83,22 +83,13 @@ if not os.path.isfile(ENGINE):
 src = video_in  # provided by mpv
 
 # ---------------------------------------------------------------------
-# 1. Color metadata: trust frame props, fall back to BT.709 limited
+# 1. Color metadata: mpv's vf_vapoursynth forbids pulling frames during
+#    script evaluation ("Frame requested during init!" -> black dummy
+#    frame), so the matrix comes from the resolution instead of props:
+#    < 600 lines (480p/576p) -> BT.601,   720p and above -> BT.709
 # ---------------------------------------------------------------------
-frame = src.get_frame(0)
-props = frame.props
-
-
-def _pi(key, default):
-    try:
-        return int(props[key])
-    except Exception:
-        return default
-
-
-matrix = _pi("_Matrix", 1)
-mat = {1: "709", 5: "470bg", 6: "470bg", 7: "240m", 9: "2020ncl"}.get(matrix, "709")
-rng = "full" if _pi("_ColorRange", 1) == 0 else "limited"
+mat = "709" if src.height >= 600 else "470bg"
+rng = "limited"   # YUV handed over by mpv is virtually always limited range
 
 # ---------------------------------------------------------------------
 # 2. To planar float RGB
@@ -132,10 +123,13 @@ if padded:
     up = core.std.Crop(up, right=(IN_W - fw) * SCALE, bottom=(IN_H - fh) * SCALE)
 
 # ---------------------------------------------------------------------
-# 5. Output packed RGB24 (full range). mpv's renderer converts to RGB on
-#    the GPU anyway, so a CPU YUV round-trip here is pure waste - at 4K
-#    it cost more than the GPU inference itself. Ordered dither kills
-#    the banding that raw 8-bit truncation would cause.
+# 5. Output YUV420P10 (limited range). mpv's vf_vapoursynth accepts YUV
+#    output ONLY - a script returning RGB fails filter init ("Unsupported
+#    output format") and mpv silently disables the AI. zimg converts the
+#    model's float RGB to 10-bit YUV with ordered dithering, gpu-next
+#    then renders it directly on the GPU.
 # ---------------------------------------------------------------------
-out = core.resize.Bicubic(up, format=vs.RGB24, dither_type="ordered")
+out = core.resize.Bicubic(
+    up, format=vs.YUV420P10, matrix_s=mat, range_s="limited",
+    dither_type="ordered")
 out.set_output()
