@@ -13,6 +13,16 @@
  called in a stderr-safe way. TensorRT prints its progress to STDERR
  which Windows PowerShell previously treated as a fatal error - that
  was the cause of "NativeCommandError" during engine building.
+
+ FIX v3: vs-mlrt v15 renamed the plugin DLL to vstrt.dll (vs_mlrt.dll
+ was the old name and no longer exists in the archive - the v2
+ installer searched for a file that is not there and aborted with
+ "vs_mlrt.dll not found inside the archive"). The installer now looks
+ for vstrt.dll (falling back to vs_mlrt.dll), reuses the extraction
+ left by a previous failed run, verifies the 7-Zip exit code, and
+ remembers the final DLL path. The TensorRT runtime DLLs live in the
+ vsmlrt-cuda subfolder, so every .vpy loader now registers that folder
+ via os.add_dll_directory() + PATH before LoadPlugin.
 =====================================================================
 #>
 param(
@@ -140,16 +150,21 @@ if ($vspipe) {
 }
 
 # ---------------------------------------------------------------------
-# 3. vs-mlrt v15.13 TensorRT bundle (~1.6 GB, contains vs_mlrt.dll,
-#    the TensorRT runtime and trtexec.exe)
+# 3. vs-mlrt v15.13 TensorRT bundle (~1.6 GB, contains vstrt.dll,
+#    the TensorRT runtime DLLs in vsmlrt-cuda\ and trtexec.exe)
 # ---------------------------------------------------------------------
 Write-Step 'Downloading/extracting vs-mlrt v15.13 (TensorRT bundle, ~1.8 GB)...'
+# FIX v3: the v15+ plugin is vstrt.dll; vs_mlrt.dll is the legacy name.
 function Find-MlrtDll {
-    if (Test-Path (Join-Path $MlrtDir 'vs_mlrt.dll')) { return (Join-Path $MlrtDir 'vs_mlrt.dll') }
+    foreach ($name in @('vstrt.dll', 'vs_mlrt.dll')) {
+        if (Test-Path (Join-Path $MlrtDir $name)) { return (Join-Path $MlrtDir $name) }
+    }
     if (Test-Path $MlrtDir) {
-        $hit = Get-ChildItem $MlrtDir -Recurse -Filter 'vs_mlrt.dll' -ErrorAction SilentlyContinue |
-               Select-Object -First 1 -ExpandProperty FullName
-        if ($hit) { return $hit }
+        foreach ($name in @('vstrt.dll', 'vs_mlrt.dll')) {
+            $hit = Get-ChildItem $MlrtDir -Recurse -Filter $name -ErrorAction SilentlyContinue |
+                   Select-Object -First 1 -ExpandProperty FullName
+            if ($hit) { return $hit }
+        }
     }
     return $null
 }
@@ -176,17 +191,58 @@ if ($mlrtDll) {
             if (-not $ok) { Write-Bad 'Could not download 7zr.exe (needed to extract the bundle).'; exit 1 }
         }
     }
-    Write-Host '    Extracting (up to a few minutes)...'
     $extractDir = Join-Path $Base '_mlrt_extract'
-    if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
-    Start-Process -FilePath $sevenZip -ArgumentList "x","`"$archive`"",'-y',"-o`"$extractDir`"" -Wait -NoNewWindow
-    $hit = Get-ChildItem $extractDir -Recurse -Filter 'vs_mlrt.dll' -ErrorAction SilentlyContinue |
-           Select-Object -First 1 -ExpandProperty FullName
-    if (-not $hit) { Write-Bad 'vs_mlrt.dll not found inside the archive - download may be corrupted. Delete the .7z and re-run.'; exit 1 }
-    $srcRoot = Split-Path -Parent $hit
+
+    # FIX v3: reuse a complete extraction left by a previous failed run
+    $haveExtract = $false
+    if (Test-Path $extractDir) {
+        foreach ($name in @('vstrt.dll', 'vs_mlrt.dll')) {
+            $probe = Get-ChildItem $extractDir -Recurse -Filter $name -ErrorAction SilentlyContinue |
+                     Select-Object -First 1 -ExpandProperty FullName
+            if ($probe) { $haveExtract = $true; break }
+        }
+    }
+
+    if ($haveExtract) {
+        Write-Ok 'reusing the extraction left by the previous run'
+    } else {
+        if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
+        Write-Host '    Extracting (up to a few minutes)...'
+        $p7z = Start-Process -FilePath $sevenZip -ArgumentList "x","`"$archive`"",'-y',"-o`"$extractDir`"" -Wait -NoNewWindow -PassThru
+        if ($p7z.ExitCode -ne 0) {
+            Write-Bad "Extraction failed (7-Zip exit code $($p7z.ExitCode))."
+            Write-Bad 'The .7z is probably corrupted - delete it and re-run this installer.'
+            exit 1
+        }
+    }
+
+    # locate the plugin: vstrt.dll in v15+, vs_mlrt.dll in older releases
+    $hit = $null
+    foreach ($name in @('vstrt.dll', 'vs_mlrt.dll')) {
+        $hit = Get-ChildItem $extractDir -Recurse -Filter $name -ErrorAction SilentlyContinue |
+               Select-Object -First 1 -ExpandProperty FullName
+        if ($hit) { break }
+    }
+    if (-not $hit) {
+        Write-Bad 'vstrt.dll not found inside the archive - download may be corrupted. Delete the .7z and re-run.'
+        exit 1
+    }
+
+    # bundle root = the directory that also holds the vsmlrt-cuda runtime
+    # (TensorRT DLLs + trtexec.exe). Walk upwards, bounded by extractDir.
+    $bundleRoot = Split-Path -Parent $hit
+    $p = $bundleRoot
+    while ($p -and $p.StartsWith($extractDir, [StringComparison]::OrdinalIgnoreCase)) {
+        if (Test-Path (Join-Path $p 'vsmlrt-cuda')) { $bundleRoot = $p; break }
+        $p = Split-Path -Parent $p
+    }
+
     if (Test-Path $MlrtDir) { Remove-Item $MlrtDir -Recurse -Force -ErrorAction SilentlyContinue }
-    Move-Item $srcRoot $MlrtDir
+    Move-Item $bundleRoot $MlrtDir
     Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+    # remember the final DLL path so the .vpy scripts pick it up instantly
+    $rel = $hit.Substring($bundleRoot.Length).TrimStart('\')
+    Set-Content -Path (Join-Path $Base 'vsmlrt.path.txt') -Value (Join-Path $MlrtDir $rel) -Encoding ASCII
     Write-Ok "vs-mlrt installed to $MlrtDir"
 }
 
@@ -202,6 +258,7 @@ import os
 import vapoursynth as vs
 from vapoursynth import core
 base = r"$Base"
+names = ('vstrt.dll', 'vs_mlrt.dll')
 if not hasattr(core, 'trt'):
     cands = []
     mem = os.path.join(base, 'vsmlrt.path.txt')
@@ -209,24 +266,37 @@ if not hasattr(core, 'trt'):
         try:
             with open(mem, 'r', encoding='utf-8') as f: cands.append(f.read().strip())
         except Exception: pass
-    cands.append(r"$MlrtDir\vs_mlrt.dll")
+    for n in names:
+        cands.append(os.path.join(base, 'vs-mlrt', n))
     for root, dirs, files in os.walk(base):
-        if 'vs_mlrt.dll' in files:
-            cands.append(os.path.join(root, 'vs_mlrt.dll'))
+        hits = [os.path.join(root, n) for n in names if n in files]
+        if hits:
+            cands.extend(hits)
             break
     loaded = False
+    last_err = None
     for c in cands:
         if c and os.path.isfile(c):
+            libdir = os.path.join(os.path.dirname(c), 'vsmlrt-cuda')
+            if os.path.isdir(libdir):
+                try: os.add_dll_directory(libdir)
+                except Exception: pass
+                os.environ['PATH'] = libdir + os.pathsep + os.environ.get('PATH', '')
             try:
-                core.std.LoadPlugin(c); loaded = hasattr(core, 'trt')
-            except Exception: pass
+                core.std.LoadPlugin(c)
+                loaded = hasattr(core, 'trt')
+            except Exception as e:
+                last_err = e
             if loaded:
                 try:
                     with open(mem, 'w', encoding='utf-8') as f: f.write(c)
                 except Exception: pass
                 break
     if not loaded:
-        raise RuntimeError('vs_mlrt.dll found but did not load')
+        msg = 'vstrt plugin (vstrt.dll / vs_mlrt.dll) not found or failed to load under ' + base
+        if last_err is not None:
+            msg += ': %r' % last_err
+        raise RuntimeError(msg)
 if not hasattr(core, 'trt'):
     raise RuntimeError('vstrt plugin not available')
 core.std.BlankClip(width=64, height=64, format=vs.RGBS, length=1).set_output()

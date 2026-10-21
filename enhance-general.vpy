@@ -21,9 +21,11 @@ IN_H    = 540
 SCALE   = 4
 
 
+# --- resilient plugin loader (FIX v3: vstrt.dll in v15+) -------------
 def _ensure_vstrt():
     if hasattr(core, "trt"):
         return
+    names = ("vstrt.dll", "vs_mlrt.dll")   # v15+ name first, legacy fallback
     cands = []
     mem = os.path.join(BASE, "vsmlrt.path.txt")
     if os.path.isfile(mem):
@@ -32,14 +34,28 @@ def _ensure_vstrt():
                 cands.append(f.read().strip())
         except Exception:
             pass
-    cands.append(os.path.join(BASE, "vs-mlrt", "vs_mlrt.dll"))
+    for n in names:
+        cands.append(os.path.join(BASE, "vs-mlrt", n))
     for root, _dirs, files in os.walk(BASE):
-        if "vs_mlrt.dll" in files:
-            cands.append(os.path.join(root, "vs_mlrt.dll"))
+        hits = [os.path.join(root, n) for n in names if n in files]
+        if hits:
+            cands.extend(hits)
             break
+    last_err = None
     for c in cands:
         if c and os.path.isfile(c):
-            core.std.LoadPlugin(c)
+            libdir = os.path.join(os.path.dirname(c), "vsmlrt-cuda")
+            if os.path.isdir(libdir):
+                try:
+                    os.add_dll_directory(libdir)
+                except Exception:
+                    pass
+                os.environ["PATH"] = libdir + os.pathsep + os.environ.get("PATH", "")
+            try:
+                core.std.LoadPlugin(c)
+            except Exception as e:
+                last_err = e
+                continue
             try:
                 with open(mem, "w", encoding="utf-8") as f:
                     f.write(c)
@@ -48,7 +64,9 @@ def _ensure_vstrt():
             if hasattr(core, "trt"):
                 return
     raise RuntimeError(
-        "vs_mlrt.dll not found under %s - re-run install.ps1" % BASE)
+        "vstrt plugin (vstrt.dll / vs_mlrt.dll) not found or failed to load "
+        "under %s%s - re-run install.ps1"
+        % (BASE, (": %r" % last_err) if last_err else ""))
 
 
 _ensure_vstrt()

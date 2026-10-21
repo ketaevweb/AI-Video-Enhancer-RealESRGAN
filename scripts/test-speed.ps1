@@ -56,6 +56,7 @@ import vapoursynth as vs
 from vapoursynth import core
 
 base = r"$Base"
+names = ('vstrt.dll', 'vs_mlrt.dll')
 if not hasattr(core, 'trt'):
     mem = os.path.join(base, 'vsmlrt.path.txt')
     loaded = False
@@ -64,13 +65,20 @@ if not hasattr(core, 'trt'):
         try:
             with open(mem, 'r', encoding='utf-8') as f: cands.append(f.read().strip())
         except Exception: pass
-    cands.append(os.path.join(base, 'vs-mlrt', 'vs_mlrt.dll'))
+    for n in names:
+        cands.append(os.path.join(base, 'vs-mlrt', n))
     for root, dirs, files in os.walk(base):
-        if 'vs_mlrt.dll' in files:
-            cands.append(os.path.join(root, 'vs_mlrt.dll'))
+        hits = [os.path.join(root, n) for n in names if n in files]
+        if hits:
+            cands.extend(hits)
             break
     for c in cands:
         if c and os.path.isfile(c):
+            libdir = os.path.join(os.path.dirname(c), 'vsmlrt-cuda')
+            if os.path.isdir(libdir):
+                try: os.add_dll_directory(libdir)
+                except Exception: pass
+                os.environ['PATH'] = libdir + os.pathsep + os.environ.get('PATH', '')
             try:
                 core.std.LoadPlugin(c)
             except Exception:
@@ -82,7 +90,7 @@ if not hasattr(core, 'trt'):
                 except Exception: pass
                 break
     if not loaded:
-        raise RuntimeError('vstrt plugin not available')
+        raise RuntimeError('vstrt plugin (vstrt.dll / vs_mlrt.dll) not available')
 
 clip = core.std.BlankClip(width=$W, height=$H, format=vs.RGBS, fpsnum=24000, fpsden=1001, length=240)
 up = core.trt.Model(clip, engine_path="$engineEsc")
