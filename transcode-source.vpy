@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # =====================================================================
 #  transcode-source.vpy - OFFLINE source wrapper for batch transcoding
-#  AIVH TRANSCODE v1
+#  AIVH TRANSCODE v2
 # =====================================================================
 #  The realtime profiles (enhance-*.vpy) get their frames from mpv as
 #  the "video_in" clip. Offline there is no mpv - this wrapper opens

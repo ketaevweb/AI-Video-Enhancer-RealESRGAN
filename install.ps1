@@ -646,8 +646,8 @@ if ($marker) {
 $tcVpy = Join-Path $Base 'transcode-source.vpy'
 $tcPs1 = Join-Path $ScriptsDir 'transcode-runner.ps1'
 try {
-    if ((Select-String -Path $tcVpy -Pattern 'AIVH TRANSCODE v1' -Quiet) -and (Test-Path $tcPs1)) {
-        Write-Ok 'offline transcode ready: transcode-source.vpy + scripts\\transcode-runner.ps1'
+    if ((Select-String -Path $tcVpy -Pattern 'AIVH TRANSCODE v' -Quiet) -and (Test-Path $tcPs1)) {
+        Write-Ok 'offline transcode ready: transcode-AI.bat / transcode-AI-fast.bat (nightly batch jobs)'
     } else {
         Write-Wrn 'offline transcode files are missing/stale (nightly batch jobs need them).'
         Write-Wrn 'Fix: re-run this installer with GitHub reachable, or extract the fresh zip over C:\AIVideoEnhancer.'
@@ -788,7 +788,32 @@ if not "%~3"=="" set "AIVH_TPROFILE=%~3"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%AIVH%\scripts\transcode-runner.ps1" -Base "%AIVH%" -InputFile "%~1" -Mode "%AIVH_TMODE%" -Profile "%AIVH_TPROFILE%"
 pause
 "@
-Write-Ok 'launchers written: watch-AI-{general, anime, general-denoise, film, film-hd, debug}.bat + transcode-AI.bat'
+# fast variant: same runner, fast profile preselected (compact x4v3 model,
+# ~2-3x faster than the RRDB 'hd' profile, slightly softer detail)
+Write-Bat (Join-Path $Base 'transcode-AI-fast.bat') @"
+@echo off
+rem AI Video Enhancer - OFFLINE TRANSCODE, FAST profile (x4v3, ~2-3x faster than transcode-AI.bat)
+rem Usage:
+rem   transcode-AI-fast.bat "D:\Films\movie.mkv"       = speed test, then a prompt
+rem   transcode-AI-fast.bat "D:\Films\movie.mkv" test  = 25 s sample + time estimate only
+rem   transcode-AI-fast.bat "D:\Films\movie.mkv" full  = transcode the whole file, no prompt
+set "AIVH=$Base"
+$pathLine
+cd /d "%AIVH%"
+if "%~1"=="" (
+    echo Drag a movie file onto this .bat for the FAST offline AI transcode.
+    echo Same as transcode-AI.bat but with the compact x4v3 model: 2-3x faster,
+    echo slightly softer detail than the RRDB 'hd' profile. Output 2560x1440.
+    pause
+    exit /b 0
+)
+set "AIVH_TMODE=ask"
+if not "%~2"=="" set "AIVH_TMODE=%~2"
+set "AIVH_TPROFILE=fast"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%AIVH%\scripts\transcode-runner.ps1" -Base "%AIVH%" -InputFile "%~1" -Mode "%AIVH_TMODE%" -Profile "%AIVH_TPROFILE%"
+pause
+"@
+Write-Ok 'launchers written: watch-AI-{general, anime, general-denoise, film, film-hd, debug}.bat + transcode-AI.bat + transcode-AI-fast.bat'
 
 # ---------------------------------------------------------------------
 # 7. TensorRT engines
@@ -810,7 +835,8 @@ Write-Host "    drag a movie onto  $Base\watch-AI-general.bat   (PRIMARY for fil
 Write-Host "    or onto            $Base\watch-AI-film.bat      (opt-in detail mode ~10-15 fps, synthetic look)"
 Write-Host "    or onto            $Base\watch-AI-anime.bat     (anime/animation ONLY - paints live action)"
 Write-Host '  Offline transcode (nightly batch, saves a real enhanced file):'
-Write-Host "    drag a movie onto $Base\transcode-AI.bat  (25 s speed test + estimate first; 'full' = the job)"
+Write-Host "    drag a movie onto $Base\transcode-AI.bat       (max quality RRDB: 25 s test + estimate first; 'full' = the job)"
+Write-Host "    or onto            $Base\transcode-AI-fast.bat (fast x4v3 model, ~2-3x faster, slightly softer)"
 Write-Host "    nothing happens?   drag the movie onto $Base\watch-AI-debug.bat"
 Write-Host '                       (runs mpv with a visible console and opens the error log in Notepad)'
 Write-Host '  In-player hotkeys: Ctrl+a films | Ctrl+f detail | Ctrl+n anime | Ctrl+0 AI off'

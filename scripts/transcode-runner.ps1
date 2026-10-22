@@ -1,7 +1,7 @@
 #requires -version 5.1
 <#
 =====================================================================
- AI Video Enhancer - OFFLINE batch transcoding driver
+ AI Video Enhancer - OFFLINE batch transcoding driver (AIVH TRANSCODE v2)
 =====================================================================
  The realtime film-hd path (RRDB x2plus, ~5 fps on an RTX 3080) is
  impossible to watch - but it makes a perfect OVERNIGHT JOB: this
@@ -10,15 +10,22 @@
  at full speed with ZERO GPU load afterwards.
 
  Pipeline:  movie -> ffms2 -> enhance-*.vpy (TensorRT AI) -> y4m
-            -> libx265 10-bit CRF17 -> <name>_AI.mkv
+            -> HEVC 10-bit (libx265 default, or -Encoder nvenc)
+            -> <name>_AI.mkv
             (audio / subtitles / chapters are copied untouched)
 
- Usage (see transcode-AI.bat):
+ Usage (see transcode-AI.bat / transcode-AI-fast.bat):
    transcode-AI.bat "D:\Films\movie.mkv"              speed test + prompt
    transcode-AI.bat "D:\Films\movie.mkv" test         25 s sample + ETA only
    transcode-AI.bat "D:\Films\movie.mkv" full         no prompt, straight run
    transcode-AI.bat "D:\Films\movie.mkv" test fast    sample with 'fast' profile
  Profiles: hd (RRDB x2plus, max quality) | fast (x4v3) | general | anime
+ Encoder :  -Encoder x265 (default, best size) | -Encoder nvenc (hardware HEVC,
+            frees the CPU; the right choice for the 4K-output anime profile)
+            -Cq 17 = quality (CRF for x265 / CQ for nvenc; lower = better)
+ In test/ask mode the script also builds <name>_AI-COMPARE.mkv: the SAME
+ 25 s piece, LEFT = plain-upscaled original vs RIGHT = AI result, synced,
+ so you can judge the quality before committing the night job.
  ffmpeg is downloaded automatically on first use if missing.
 
  NOTE ON NON-ASCII PATHS: the actual pipeline runs from a tiny .cmd
@@ -32,8 +39,10 @@
 param(
     [string]$Base = 'C:\AIVideoEnhancer',
     [Parameter(Mandatory=$true)][string]$InputFile,
-    [string]$Mode = 'ask',    # ask | test | full
-    [string]$Profile = 'hd'   # hd | fast | general | anime
+    [string]$Mode = 'ask',         # ask | test | full
+    [string]$Profile = 'hd',       # hd | fast | general | anime
+    [string]$Encoder = 'x265',     # x265 (default, best size) | nvenc (hardware)
+    [int]$Cq = 17                  # CRF (x265) / CQ (nvenc): lower = better + bigger
 )
 
 $ErrorActionPreference = 'Stop'
@@ -49,7 +58,33 @@ function Format-Duration([double]$sec) {
     if ($ts.TotalHours -ge 1) {
         return ('{0} h {1:D2} min' -f [int][math]::Floor($ts.TotalHours), $ts.Minutes)
     }
-    return ('{0} min' -f [int][math]::Round($ts.TotalMinutes))
+    if ($ts.TotalMinutes -ge 1) {
+        return ('{0} min' -f [int][math]::Round($ts.TotalMinutes))
+    }
+    return ('{0} s' -f [int]$ts.TotalSeconds)
+}
+
+# side-by-side proof clip: LEFT = the original plainly upscaled (lanczos,
+# what you see today), RIGHT = the AI-rendered result. Both from the same
+# 25 s piece. Trim/fps are done in filters (no input -ss): both branches
+# get an identical 0-based CFR timeline, so hstack stays frame-synced.
+function Build-Compare {
+    param([string]$SourceFile, [string]$SampleFile, [string]$OutFile,
+          [string]$Rate, [double]$StartSec, [double]$LenSec)
+    $dims = (& $ffprobe -v error -select_streams v:0 -show_entries 'stream=width,height' `
+             -of csv=p=0 -- $SampleFile) -join ''
+    if ($dims -notmatch '^\s*(\d+)\s*,\s*(\d+)\s*$') { return $false }
+    $w = $Matches[1]; $h = $Matches[2]
+    $ci = [System.Globalization.CultureInfo]::InvariantCulture
+    $ss = $StartSec.ToString($ci)
+    $en = ($StartSec + $LenSec).ToString($ci)
+    $fc = "[0:v]trim=start=$ss:end=$en,setpts=PTS-STARTPTS,fps=$Rate,scale=${w}:${h}:flags=lanczos,setsar=1[l];" +
+          "[1:v]fps=$Rate,setsar=1[r];[l][r]hstack=shortest=1,format=yuv420p[v]"
+    & $ffmpeg -hide_banner -loglevel error -nostdin -y `
+        -i $SourceFile -i $SampleFile `
+        -filter_complex $fc -map '[v]' -map 1:a? `
+        -c:v libx264 -preset veryfast -crf 16 -c:a copy $OutFile 2>$null
+    return ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $OutFile))
 }
 
 # ------------------------------------------------------------------
@@ -68,33 +103,90 @@ function New-PipeCmdFile([string]$Path, [bool]$Fragment) {
         $vsp = '"%AIVH_VSPIPE%" -c y4m -p "%AIVH_VPY%" -'
     }
     if ($Fragment) {
-        $line = "$vsp | `"%AIVH_FFMPEG%`" -hide_banner -loglevel warning -nostdin -y %AIVH_INARGS% -ss %AIVH_SS% -i `"%AIVH_SRC%`" -map 0:v:0 -map 1:a? -c:v libx264 -preset veryfast -crf 16 -pix_fmt yuv420p10le -c:a copy `"%AIVH_SAMPLE%`" 2>`"%AIVH_LOG%`""
+        # NB: parentheses make 2> bind to the WHOLE pipeline (both stderrs
+        # go to the log: vspipe progress/errors + ffmpeg warnings). Without
+        # them cmd redirects only the last command of the pipe.
+        # Audio is trimmed by atrim (NOT by an input -ss): with '-ss X -i src
+        # -c:a copy' ffmpeg rebases the decoded video to 0 but keeps the
+        # copied audio at its original X-based timestamps - the preview
+        # would have audio starting X seconds late. Re-encoding 25 s of
+        # audio costs nothing and guarantees a 0-based, in-sync preview.
+        $line = "($vsp | `"%AIVH_FFMPEG%`" -hide_banner -loglevel warning -nostdin -y %AIVH_INARGS% -i `"%AIVH_SRC%`" %AIVH_AUDARGS% -c:v libx264 -preset veryfast -crf 16 -pix_fmt yuv420p10le `"%AIVH_SAMPLE%`") 2>`"%AIVH_LOG%`""
     } else {
-        $line = "$vsp | `"%AIVH_FFMPEG%`" -hide_banner -loglevel warning -nostdin -y -nostats %AIVH_INARGS% -i `"%AIVH_SRC%`" -map 0:v:0 -map 1:a? -map 1:s? -map_metadata 1 -map_chapters 1 -c:v libx265 -preset medium -crf 17 -pix_fmt yuv420p10le -c:a copy -c:s copy -max_muxing_queue_size 10240 `"%AIVH_OUT%`" 2>`"%AIVH_LOG%`""
+        $line = "($vsp | `"%AIVH_FFMPEG%`" -hide_banner -loglevel warning -nostdin -y -nostats %AIVH_INARGS% -i `"%AIVH_SRC%`" -map 0:v:0 -map 1:a? -map 1:s? -map_metadata 1 -map_chapters 1 -c:v %AIVH_VENC% %AIVH_VENCARGS% -c:a copy -c:s copy -max_muxing_queue_size 10240 `"%AIVH_OUT%`") 2>`"%AIVH_LOG%`""
     }
     Set-Content -Path $Path -Value @($line, 'if errorlevel 1 exit /b 1', 'exit /b 0') -Encoding ASCII
 }
 
-function Invoke-Pipe([string]$CmdFile, [bool]$Fragment) {
-    $env:AIVH_INARGS = '-f y4m -i -'
-    New-PipeCmdFile $CmdFile $Fragment
-    cmd /c "`"$CmdFile`""
-    if ($LASTEXITCODE -eq 0) { return $true }
-    $logTxt = ''
-    if (Test-Path -LiteralPath $logFile) { $logTxt = (Get-Content -LiteralPath $logFile -Raw) }
-    if ($logTxt -notmatch "Unknown input format: 'y4m'") { return $false }
-    Write-Wrn 'this ffmpeg build has no y4m demuxer - retrying with a rawvideo pipe...'
-    $infoTxt = (& $vspipe --info $vpy - 2>$null) -join "`n"
-    $w = 0; $h = 0; $fn = 0; $fd = 1
-    if ($infoTxt -match 'Width:\s*(\d+)')  { $w  = [int]$Matches[1] }
-    if ($infoTxt -match 'Height:\s*(\d+)') { $h  = [int]$Matches[1] }
-    if ($infoTxt -match 'FPS:\s*(\d+)\s*/\s*(\d+)') { $fn = [int]$Matches[1]; $fd = [int]$Matches[2] }
-    if ($w -le 0 -or $h -le 0 -or $fn -le 0) {
-        Write-Bad 'could not determine the render output geometry (vspipe --info).'
-        return $false
+function Read-LogTail([string]$Path, [int]$Bytes = 16384) {
+    try {
+        $fs = [IO.File]::Open($Path, 'Open', 'Read', 'ReadWrite')
+        try {
+            if ($fs.Length -gt $Bytes) { $null = $fs.Seek(-$Bytes, 'End') }
+            $len = [int]($fs.Length - $fs.Position)
+            if ($len -le 0) { return '' }
+            $buf = New-Object byte[] $len
+            $null = $fs.Read($buf, 0, $len)
+            return [Text.Encoding]::GetEncoding(1252).GetString($buf)
+        } finally { $fs.Close() }
+    } catch { return '' }
+}
+
+# full-run renderer with a live one-line progress readout: the cmd pipe
+# runs hidden (all its stderr goes to the log), this loop polls the log
+# for vspipe's 'Frame: N/M' updates and redraws %, fps, ETA, elapsed.
+function Start-LivePipe([string]$CmdFile) {
+    Write-Host '    live progress (Ctrl+C aborts the job):' -ForegroundColor DarkGray
+    $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "`"$CmdFile`"" -NoNewWindow -PassThru
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $lastFrame = -1; $lastTick = 0.0; $fps = 0.0; $total = $nb
+    while (-not $proc.HasExited) {
+        Start-Sleep -Milliseconds 2500
+        if ($proc.HasExited) { break }
+        $tail = Read-LogTail $logFile
+        $frame = -1; $vsTotal = 0
+        foreach ($m in [regex]::Matches($tail, 'Frame:\s*(\d+)/(\d+)')) {
+            $frame = [int]$m.Groups[1].Value; $vsTotal = [int]$m.Groups[2].Value
+        }
+        if ($vsTotal -gt 0) { $total = $vsTotal }
+        if ($frame -lt 0) { continue }
+        $now = $sw.Elapsed.TotalSeconds
+        if ($lastFrame -ge 0 -and $now - $lastTick -gt 0.5) {
+            $inst = ($frame - $lastFrame) / ($now - $lastTick)
+            if ($fps -le 0) { $fps = $inst } else { $fps = 0.3 * $inst + 0.7 * $fps }
+        }
+        $lastFrame = $frame; $lastTick = $now
+        $pct = 0.0; if ($total -gt 0) { $pct = 100.0 * $frame / $total }
+        $filled = [int][math]::Round($pct / 5); if ($filled -lt 0) { $filled = 0 }; if ($filled -gt 20) { $filled = 20 }
+        $bar = ('#' * $filled) + ('.' * (20 - $filled))
+        $eta = '?'; if ($fps -gt 0.01) { $eta = Format-Duration (($total - $frame) / $fps) }
+        Write-Host -NoNewline ("`r    [{0}] {1,5:F1}%  {2}/{3} frames  {4,5:F2} fps  ETA {5}  elapsed {6}   " -f `
+            $bar, $pct, $frame, $total, $fps, $eta, (Format-Duration $now))
     }
-    $env:AIVH_INARGS = "-f rawvideo -pix_fmt yuv420p10le -video_size ${w}x${h} -r $fn/$fd -i -"
+    $null = $proc.WaitForExit()
+    Write-Host ''
+    return ($proc.ExitCode -eq 0)
+}
+
+function Invoke-Pipe([string]$CmdFile, [bool]$Fragment, [switch]$Live) {
+    $env:AIVH_INARGS = '-f y4m -i -'
+    $haveY4m = $false
+    try { $haveY4m = (& $ffmpeg -hide_banner -demuxers 2>$null | Select-String -Quiet '\sy4m\s') } catch { }
+    if (-not $haveY4m) {
+        Write-Wrn 'this ffmpeg build has no y4m demuxer - using a rawvideo pipe (geometry via vspipe --info)...'
+        $infoTxt = (& $vspipe --info $vpy - 2>$null) -join "`n"
+        $w = 0; $h = 0; $fn = 0; $fd = 1
+        if ($infoTxt -match 'Width:\s*(\d+)')  { $w  = [int]$Matches[1] }
+        if ($infoTxt -match 'Height:\s*(\d+)') { $h  = [int]$Matches[1] }
+        if ($infoTxt -match 'FPS:\s*(\d+)\s*/\s*(\d+)') { $fn = [int]$Matches[1]; $fd = [int]$Matches[2] }
+        if ($w -le 0 -or $h -le 0 -or $fn -le 0) {
+            Write-Bad 'could not determine the render output geometry (vspipe --info).'
+            return $false
+        }
+        $env:AIVH_INARGS = "-f rawvideo -pix_fmt yuv420p10le -video_size ${w}x${h} -r $fn/$fd -i -"
+    }
     New-PipeCmdFile $CmdFile $Fragment
+    if ($Live) { return (Start-LivePipe $CmdFile) }
     cmd /c "`"$CmdFile`""
     return ($LASTEXITCODE -eq 0)
 }
@@ -241,6 +333,28 @@ if (-not $ffprobe) { Write-Bad 'ffprobe.exe not found (must sit next to ffmpeg.e
 Write-Ok "ffmpeg: $ffmpeg"
 
 # ------------------------------------------------------------------
+# 3b. final encoder (video codec for the FULL run; the 25 s sample is
+#     always written with fast x264 so the bench measures the AI, not
+#     the encoder)
+# ------------------------------------------------------------------
+if ($Encoder -eq 'nvenc') {
+    $hasNvenc = $false
+    try { $hasNvenc = (& $ffmpeg -hide_banner -encoders 2>$null | Select-String -Quiet 'hevc_nvenc') } catch { }
+    if (-not $hasNvenc) {
+        Write-Bad 'this ffmpeg build has no hevc_nvenc - use -Encoder x265 (default) or another ffmpeg build.'
+        exit 1
+    }
+    Write-Ok ('encoder: hevc_nvenc CQ{0} (hardware NVENC - near-zero CPU load)' -f $Cq)
+} else {
+    $Encoder = 'x265'
+    Write-Ok ('encoder: libx265 CRF{0} medium (CPU encode - best size/quality per bit)' -f $Cq)
+    if ($Profile -eq 'anime') {
+        Write-Wrn 'anime profile outputs 4K: CPU x265 will be the bottleneck (~4-6 fps).'
+        Write-Wrn 'Consider -Encoder nvenc for this profile (hardware, ~3x faster total).'
+    }
+}
+
+# ------------------------------------------------------------------
 # 4. probe the source
 # ------------------------------------------------------------------
 Write-Step 'Reading source info (ffprobe)'
@@ -309,9 +423,31 @@ $env:AIVH_TRANSCODE_PROFILE = $prof.Vpy
 $env:AIVH_VSPIPE            = $vspipe
 $env:AIVH_FFMPEG            = $ffmpeg
 $env:AIVH_VPY               = $vpy
+if ($Encoder -eq 'nvenc') {
+    $env:AIVH_VENC      = 'hevc_nvenc'
+    $env:AIVH_VENCARGS  = "-preset p7 -tune hq -rc vbr -cq $Cq -b:v 0 -spatial-aq 1 -pix_fmt p010le"
+} else {
+    $env:AIVH_VENC      = 'libx265'
+    $env:AIVH_VENCARGS  = "-preset medium -crf $Cq -pix_fmt yuv420p10le"
+}
 $env:AIVH_START             = "$startF"
 $env:AIVH_END               = "$endF"
 $env:AIVH_SS                = $ssSec
+# sample audio: atrim window = [ss, ss + sample length + 0.25 s]; audio is
+# re-encoded to AAC for the preview (see New-PipeCmdFile on why not copy).
+# The whole audio segment travels as ONE variable: a source without any
+# audio track must not hit the [1:a] filter at all, so for it we pass a
+# plain '-map 0:v:0 -an' instead.
+$ci = [System.Globalization.CultureInfo]::InvariantCulture
+$aendSec = ($startF / $fps + $probeN / $fps + 0.25).ToString($ci)
+$hasAudio = $false
+try { $hasAudio = @(& $ffprobe -v error -select_streams a -show_entries 'stream=index' -of csv=p=0 -- $InputFile).Count -gt 0 } catch { }
+if ($hasAudio) {
+    $env:AIVH_AUDARGS = ('-filter_complex "[1:a]atrim=start={0}:end={1},asetpts=PTS-STARTPTS[a]" -map 0:v:0 -map "[a]" -c:a aac -b:a 192k' -f $ssSec, $aendSec)
+} else {
+    Write-Wrn 'source has no audio track - the sample will be silent.'
+    $env:AIVH_AUDARGS = '-map 0:v:0 -an'
+}
 $env:AIVH_SAMPLE            = $sample
 $env:AIVH_OUT               = $partFile
 $env:AIVH_LOG               = $logFile
@@ -334,14 +470,38 @@ Write-Ok ("measured speed: {0:F2} fps  ({1:F0} s for {2} frames, engine load inc
 Write-Host ''
 Write-Host ('    >>> ESTIMATED TOTAL TIME for this movie: ~{0}  ({1} frames, {2}) <<<' -f (Format-Duration $etaSec), $nb, (Format-Duration $dur)) -ForegroundColor Yellow
 Write-Host ('    sample so you can SEE the result: {0}' -f $sample)
-Write-Host '    (the sample is encoded fast-and-dirty x264; the final file uses slower, better x265)'
+Write-Host '    (the sample is encoded fast-and-dirty x264; the final file uses slower, better HEVC)'
 Write-Host ''
+
+# ------------------------------------------------------------------
+# 6b. side-by-side comparison clip (test/ask modes only): LEFT =
+#     original plainly upscaled, RIGHT = the AI result, same piece.
+# ------------------------------------------------------------------
+$compare = Join-Path $srcDir ($stem + $prof.Suffix + '-COMPARE.mkv')
+if ($Mode -ne 'full') {
+    Write-Step 'Building a side-by-side comparison (LEFT original, RIGHT AI)...'
+    Remove-Item -LiteralPath $compare -Force -ErrorAction SilentlyContinue
+    $rate = "$([int][math]::Round($fps))"
+    try {
+        $rt = (& $ffprobe -v error -select_streams v:0 -show_entries 'stream=r_frame_rate' -of csv=p=0 -- $sample) -join ''
+        if ("$rt" -match '^\s*(\d+/\d+)\s*$') { $rate = $Matches[1] }
+    } catch { }
+    if (Build-Compare $InputFile $sample $compare $rate $ssSec ($probeN / $fps)) {
+        Write-Ok "comparison: $compare"
+        Write-Host '    open it and step through a few frames: left = what you watch today,' -ForegroundColor DarkGray
+        Write-Host '    right = the AI-transcoded picture. Same zoom, frame-synced.'        -ForegroundColor DarkGray
+    } else {
+        Write-Wrn 'comparison clip failed (non-fatal) - judge by the SAMPLE file instead.'
+    }
+    Write-Host ''
+}
 
 # ------------------------------------------------------------------
 # 7. mode handling
 # ------------------------------------------------------------------
 if ($Mode -eq 'test') {
-    Write-Ok 'test mode: nothing else will run. If the quality suits you, start the real job with:'
+    Write-Ok 'test mode: nothing else will run. Watch the SAMPLE / COMPARE files above.'
+    Write-Host '    If the quality suits you, start the real job with:'                  -ForegroundColor White
     Write-Host ("      transcode-AI.bat `"{0}`" full" -f $InputFile) -ForegroundColor White
     exit 0
 }
@@ -362,12 +522,13 @@ if (Test-Path -LiteralPath $outFile) {
 # 8. FULL transcode (overnight job; no resume - do not close the window)
 # ------------------------------------------------------------------
 Write-Step 'FULL TRANSCODE started (leave the PC alone; Ctrl+C aborts, nothing is resumed)'
-Write-Host '    vspipe prints live progress (Frame ... / FPS ...) - that IS the pipeline speed.'
+Write-Host '    prevent sleep for the night:  powercfg -change standby-timeout-ac 0'      -ForegroundColor DarkGray
+Write-Host '    (or Power settings -> Sleep -> Never; the job itself shows live progress)'
 $fullCmd = Join-Path $env:TEMP 'aivh_transcode_full.cmd'
 Remove-Item -LiteralPath $partFile -Force -ErrorAction SilentlyContinue
 
 $sw2 = [System.Diagnostics.Stopwatch]::StartNew()
-$pipeOk2 = Invoke-Pipe $fullCmd $false
+$pipeOk2 = Invoke-Pipe $fullCmd $false -Live
 $sw2.Stop()
 if (-not $pipeOk2 -or -not (Test-Path -LiteralPath $partFile)) {
     Write-Bad ("transcode FAILED (see the errors above). Last lines of {0}:" -f $logFile)
