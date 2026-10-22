@@ -565,9 +565,11 @@ Deploy-File 'enhance-film.vpy'     $Base
 Deploy-File 'enhance-film-hd.vpy'  $Base
 Deploy-File 'enhance-anime.vpy'    $Base
 Deploy-File 'enhance-general.vpy'  $Base
+Deploy-File 'transcode-source.vpy' $Base
 Deploy-File 'build-engines.ps1'    $Base
 if (-not (Test-Path $ScriptsDir)) { New-Item -ItemType Directory -Path $ScriptsDir -Force | Out-Null }
-Deploy-File 'scripts/test-speed.ps1' $ScriptsDir
+Deploy-File 'scripts/test-speed.ps1'      $ScriptsDir
+Deploy-File 'scripts/transcode-runner.ps1' $ScriptsDir
 if (-not (Test-Path $MpvConfDir)) { New-Item -ItemType Directory -Path $MpvConfDir -Force | Out-Null }
 Deploy-File 'mpv/mpv.conf'   $MpvConfDir
 Deploy-File 'mpv/input.conf' $MpvConfDir
@@ -629,6 +631,7 @@ try { $marker = Select-String -Path $genVpy -Pattern 'QUALITY v9' -Quiet } catch
 if ($marker) {
     Write-Ok 'pipeline version: QUALITY v9 (AI + texture restore on ALL sources; Ctrl+0 = AI-free natural view)'
 } else {
+    # (stale-pipeline message below)
     Write-Bad 'pipeline files are STALE - no QUALITY v9 marker in enhance-general.vpy.'
     Write-Host '    Old files either make live-action movies look like cartoons (PERF v6),'
     Write-Host '    skip the AI on HD sources (QUALITY v8), or crash with Resize error 3074.'
@@ -638,6 +641,18 @@ if ($marker) {
     Write-Host '         INTO C:\AIVideoEnhancer with file OVERWRITE, then re-run install.ps1'
     exit 1
 }
+
+# offline transcode files (non-fatal: realtime playback works without them)
+$tcVpy = Join-Path $Base 'transcode-source.vpy'
+$tcPs1 = Join-Path $ScriptsDir 'transcode-runner.ps1'
+try {
+    if ((Select-String -Path $tcVpy -Pattern 'AIVH TRANSCODE v1' -Quiet) -and (Test-Path $tcPs1)) {
+        Write-Ok 'offline transcode ready: transcode-source.vpy + scripts\\transcode-runner.ps1'
+    } else {
+        Write-Wrn 'offline transcode files are missing/stale (nightly batch jobs need them).'
+        Write-Wrn 'Fix: re-run this installer with GitHub reachable, or extract the fresh zip over C:\AIVideoEnhancer.'
+    }
+} catch { }
 
 # ---------------------------------------------------------------------
 # 6b. locate VSScript.dll (the runtime mpv loads for VapourSynth).
@@ -745,7 +760,35 @@ echo log : $LogsDir\mpv-debug.log
 if exist "$LogsDir\mpv-debug.log" start "" notepad "$LogsDir\mpv-debug.log"
 pause
 "@
-Write-Ok 'launchers written: watch-AI-{general, anime, general-denoise, film, film-hd, debug}.bat'
+# offline transcode launcher: drives scripts\transcode-runner.ps1
+# (modes: ask/test/full, profiles: hd/fast/general/anime - see the runner header)
+Write-Bat (Join-Path $Base 'transcode-AI.bat') @"
+@echo off
+rem AI Video Enhancer - OFFLINE TRANSCODE (nightly batch re-encode, NOT for watching)
+rem Usage:
+rem   transcode-AI.bat "D:\Films\movie.mkv"            = speed test, then a prompt
+rem   transcode-AI.bat "D:\Films\movie.mkv" test       = 25 s sample + time estimate only
+rem   transcode-AI.bat "D:\Films\movie.mkv" full       = transcode the whole file, no prompt
+rem   transcode-AI.bat "D:\Films\movie.mkv" test fast  = sample with the fast profile
+rem Profiles: hd (RRDB x2plus, max quality) ^| fast ^| general ^| anime
+set "AIVH=$Base"
+$pathLine
+cd /d "%AIVH%"
+if "%~1"=="" (
+    echo Drag a movie file onto this .bat to start the OFFLINE AI transcode.
+    echo First run does a 25-second speed test and shows the total time estimate.
+    echo Modes: [test^|ask^|full]   Profiles: [hd^|fast^|general^|anime]
+    pause
+    exit /b 0
+)
+set "AIVH_TMODE=ask"
+if not "%~2"=="" set "AIVH_TMODE=%~2"
+set "AIVH_TPROFILE=hd"
+if not "%~3"=="" set "AIVH_TPROFILE=%~3"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%AIVH%\scripts\transcode-runner.ps1" -Base "%AIVH%" -InputFile "%~1" -Mode "%AIVH_TMODE%" -Profile "%AIVH_TPROFILE%"
+pause
+"@
+Write-Ok 'launchers written: watch-AI-{general, anime, general-denoise, film, film-hd, debug}.bat + transcode-AI.bat'
 
 # ---------------------------------------------------------------------
 # 7. TensorRT engines
@@ -766,6 +809,8 @@ Write-Host '  How to watch:'
 Write-Host "    drag a movie onto  $Base\watch-AI-general.bat   (PRIMARY for films: AI + texture restore on HD and SD; Ctrl+0 = AI-free natural view)"
 Write-Host "    or onto            $Base\watch-AI-film.bat      (opt-in detail mode ~10-15 fps, synthetic look)"
 Write-Host "    or onto            $Base\watch-AI-anime.bat     (anime/animation ONLY - paints live action)"
+Write-Host '  Offline transcode (nightly batch, saves a real enhanced file):'
+Write-Host "    drag a movie onto $Base\transcode-AI.bat  (25 s speed test + estimate first; 'full' = the job)"
 Write-Host "    nothing happens?   drag the movie onto $Base\watch-AI-debug.bat"
 Write-Host '                       (runs mpv with a visible console and opens the error log in Notepad)'
 Write-Host '  In-player hotkeys: Ctrl+a films | Ctrl+f detail | Ctrl+n anime | Ctrl+0 AI off'

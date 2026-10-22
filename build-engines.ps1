@@ -147,7 +147,7 @@ $engines = @(
     @{ Model='realesr-general-wdn-x4v3';  Onnx='realesr-general-wdn-x4v3.onnx';  H=540; W=960;  Scale=4; Note='compact, denoise-only variant (no longer used by realtime vpys)' },
     @{ Model='realesr-animevideov3';      Onnx='realesr-animevideov3.onnx';      H=540; W=960;  Scale=4; Note='compact, anime/video model (enhance-anime.vpy)' },
     @{ Model='RealESRGAN_x4plus';         Onnx='RealESRGAN_x4plus.onnx';         H=540; W=960;  Scale=4; Note='RRDB, best detail for live-action (max quality SD path)' },
-    @{ Model='RealESRGAN_x2plus';         Onnx='RealESRGAN_x2plus.onnx';         H=720; W=1280; Scale=2; Note='RRDB, 720p->1440p direct path (used by enhance-film-hd.vpy)'; Optional=$true }
+    @{ Model='RealESRGAN_x2plus';         Onnx='RealESRGAN_x2plus.onnx';         H=720; W=1280; Scale=2; Note='RRDB, 720p->1440p direct path (enhance-film-hd.vpy + offline transcode-AI.bat)'; Optional=$true }
 )
 
 $built = 0; $skipped = 0; $failed = 0
@@ -287,13 +287,16 @@ Write-Host ''
 Write-Host '  Engine inventory:' -ForegroundColor Cyan
 Get-ChildItem $EnginesDir -Filter '*.engine' -ErrorAction SilentlyContinue | ForEach-Object {
     $mb  = [math]::Round($_.Length / 1MB, 1)
-    $tag = if ($_.Name -like '*360x640*') { '   <- 2K realtime (PERF v6)' } else { '' }
+    $tag = ''
+    if ($_.Name -like 'realesr-general-x4v3_1x3x360x640*')  { $tag = '   <- 2K realtime (QUALITY v9, watch-AI-general)' }
+    elseif ($_.Name -like 'RealESRGAN_x2plus*')             { $tag = '   <- offline transcode (transcode-AI.bat)' }
+    elseif ($_.Name -like 'realesr-animevideov3_1x3x360x640*') { $tag = '   <- legacy PERF v6 primary (superseded by QUALITY v9)' }
     Write-Host ("    {0}  ({1} MB){2}" -f $_.Name, $mb, $tag)
 }
-if (Test-Path (Join-Path $EnginesDir 'realesr-animevideov3_1x3x360x640_fp16.engine')) {
-    Write-Ok '2K realtime engine present - watch-AI-general.bat is ready (~50 fps class)'
+if (Test-Path (Join-Path $EnginesDir 'realesr-general-x4v3_1x3x360x640_fp16.engine')) {
+    Write-Ok '2K realtime engine present - watch-AI-general.bat is ready (AI on ALL sources, QUALITY v9)'
 } else {
-    Write-Wrn 'the 2K realtime engine (realesr-animevideov3_1x3x360x640_fp16) is NOT built yet!'
+    Write-Wrn 'the 2K realtime engine (realesr-general-x4v3_1x3x360x640_fp16) is NOT built yet!'
     Write-Host '    If the build failed above, simply re-run this script - finished engines are skipped.'
 }
 
@@ -307,5 +310,5 @@ if ($failedNames.Count -gt 0) {
 
 Write-Host ''
 Write-Host 'Next step: verify realtime speed with  scripts\test-speed.ps1' -ForegroundColor Cyan
-Write-Host 'Then play a movie - AI enhancement switches on automatically for SD/HD sources.'
+Write-Host 'Overnight batch re-encode (saves an enhanced file): drag a movie onto transcode-AI.bat'
 Write-Host ''
