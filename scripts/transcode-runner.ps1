@@ -1,8 +1,15 @@
 #requires -version 5.1
 <#
 =====================================================================
- AI Video Enhancer - OFFLINE batch transcoding driver (AIVH TRANSCODE v2.1)
+ AI Video Enhancer - OFFLINE batch transcoding driver (AIVH TRANSCODE v2.2)
 =====================================================================
+ v2.2 hotfix: the runner fed the PROFILE vpy straight to vspipe, but a
+ profile needs the 'video_in' clip that only the offline wrapper
+ (transcode-source.vpy) provides when there is no mpv - the first real
+ source died with "NameError: video_in is not defined" inside the
+ speed test, whose error text was hidden in logs\transcode-last.log.
+ vspipe now runs the WRAPPER (AIVH_TRANSCODE_PROFILE still selects the
+ profile), and a failed speed test prints the log tail on screen.
  v2.1 hotfixes (both bugs bit on the very first real run):
   1) Windows PowerShell 5.1 turns ANY stderr line of a redirected
      native command into a terminating NativeCommandError. VSPipe
@@ -206,7 +213,9 @@ function Invoke-Pipe([string]$CmdFile, [bool]$Fragment, [switch]$Live) {
     try { $haveY4m = [bool]((Invoke-Quiet $ffmpeg @('-hide_banner', '-demuxers')) | Select-String -SimpleMatch 'yuv4mpegpipe') } catch { }
     if (-not $haveY4m) {
         Write-Wrn 'this ffmpeg build has no yuv4mpegpipe (y4m) demuxer - using a rawvideo pipe (geometry via vspipe --info)...'
-        $infoTxt = (Invoke-Quiet $vspipe @('--info', $vpy, '-')) -join "`n"
+        # --info on the WRAPPER: the wrapper + profile define the actual
+        # output node, the profile alone cannot even evaluate (no video_in)
+        $infoTxt = (Invoke-Quiet $vspipe @('--info', $wrapperVpy, '-')) -join "`n"
         $w = 0; $h = 0; $fn = 0; $fd = 1
         if ($infoTxt -match 'Width:\s*(\d+)')  { $w  = [int]$Matches[1] }
         if ($infoTxt -match 'Height:\s*(\d+)') { $h  = [int]$Matches[1] }
@@ -260,6 +269,15 @@ if (-not (Test-Path -LiteralPath $vpy)) {
     exit 1
 }
 Write-Ok ("profile: {0} - {1}" -f $Profile, $prof.Label)
+
+# v2.2: under vspipe there is no mpv to hand over the 'video_in' clip,
+# so vspipe must run the OFFLINE WRAPPER, which opens the movie
+# (ffms2/lsmas) and execs the profile (selected via AIVH_TRANSCODE_PROFILE).
+$wrapperVpy = Join-Path $Base 'transcode-source.vpy'
+if (-not (Test-Path -LiteralPath $wrapperVpy)) {
+    Write-Bad 'transcode-source.vpy not found - re-run install.ps1'
+    exit 1
+}
 
 if ($Profile -eq 'hd') {
     $x2 = Join-Path $Base 'engines\RealESRGAN_x2plus_1x3x720x1280_fp16.engine'
@@ -459,7 +477,7 @@ $env:AIVH_SRC               = $InputFile
 $env:AIVH_TRANSCODE_PROFILE = $prof.Vpy
 $env:AIVH_VSPIPE            = $vspipe
 $env:AIVH_FFMPEG            = $ffmpeg
-$env:AIVH_VPY               = $vpy
+# AIVH_VPY (the wrapper) is set further below, after the bench window math
 if ($Encoder -eq 'nvenc') {
     $env:AIVH_VENC      = 'hevc_nvenc'
     $env:AIVH_VENCARGS  = "-preset p7 -tune hq -rc vbr -cq $Cq -b:v 0 -spatial-aq 1 -pix_fmt p010le"
@@ -470,6 +488,8 @@ if ($Encoder -eq 'nvenc') {
 $env:AIVH_START             = "$startF"
 $env:AIVH_END               = "$endF"
 $env:AIVH_SS                = $ssSec
+# v2.2: AIVH_VPY is the wrapper; the profile travels via AIVH_TRANSCODE_PROFILE
+$env:AIVH_VPY               = $wrapperVpy
 # sample audio: atrim window = [ss, ss + sample length + 0.25 s]; audio is
 # re-encoded to AAC for the preview (see New-PipeCmdFile on why not copy).
 # The whole audio segment travels as ONE variable: a source without any
@@ -497,8 +517,13 @@ $sw = [System.Diagnostics.Stopwatch]::StartNew()
 $pipeOk = Invoke-Pipe $benchCmd $true
 $sw.Stop()
 if (-not $pipeOk -or -not (Test-Path -LiteralPath $sample)) {
-    Write-Bad 'the speed test failed - see the vspipe/ffmpeg error printed above.'
-    Write-Bad 'Typical causes: engine not built (run build-engines.ps1) or an unreadable source file.'
+    Write-Bad 'the speed test failed. Last lines of the vspipe/ffmpeg log:'
+    if (Test-Path -LiteralPath $logFile) {
+        Get-Content -LiteralPath $logFile -Tail 15 | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkGray }
+    } else {
+        Write-Bad "(log not found: $logFile)"
+    }
+    Write-Bad 'Typical causes: engine not built (run build-engines.ps1), ffms2/lsmas missing, or an unreadable source file.'
     exit 1
 }
 $fpsMeas = $probeN / $sw.Elapsed.TotalSeconds
