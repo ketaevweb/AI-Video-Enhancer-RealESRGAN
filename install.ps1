@@ -75,7 +75,10 @@
 #>
 param(
     [string]$Base = 'C:\AIVideoEnhancer',
-    [switch]$Minimal   # forward to build-engines.ps1: skip the heavy x2plus engine
+    [switch]$Minimal,   # forward to build-engines.ps1: skip the heavy x2plus engine
+    # TRANSCODE v2.3: ONLY fetch the ffms2 source reader (used by the
+    # transcode runner for self-healing; no VapourSynth/GPU checks run)
+    [switch]$SourceReaderOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -103,6 +106,69 @@ Write-Host '=====================================================' -ForegroundCo
 Write-Host "    project : $ProjectRoot"
 Write-Host "    runtime : $Base"
 Write-Host ''
+
+function Ensure-SourceReader {
+    # The ffms2 SOURCE FILTER is mandatory for offline transcoding (it is
+    # what opens the movie when there is no mpv). pip-installed VapourSynth
+    # ships ZERO source filters (verified: the R79 Windows wheel contains
+    # only coreplugins/avscompat), so this step downloads the OFFICIAL
+    # FFMS2 release (FFMS/ffms2, GPL3) and installs the plugin dll into
+    # $Base\plugins\ffms2.dll - loaded explicitly by transcode-source.vpy,
+    # exactly like the vstrt plugin.
+    $PluginsDir = Join-Path $Base 'plugins'
+    $ffms2 = Join-Path $PluginsDir 'ffms2.dll'
+    if ((Test-Path $ffms2) -and ((Get-Item $ffms2).Length -gt 10MB)) {
+        Write-Ok "source reader present: $ffms2"
+        return $true
+    }
+    Write-Step 'Fetching the source reader (official FFMS2 plugin, ~9 MB, one-time)'
+    if (-not (Test-Path $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
+    $archive = Join-Path $env:TEMP 'ffms2-5.0-msvc.7z'
+    $url = 'https://github.com/FFMS/ffms2/releases/download/5.0/ffms2-5.0-msvc.7z'
+    if (-not ((Test-Path $archive) -and ((Get-Item $archive).Length -gt 5MB))) {
+        if (-not (Get-Url $url $archive)) {
+            Write-Bad "could not download $url (offline? proxy?)"
+            return $false
+        }
+    }
+    $sevenZip = $null
+    try { $sevenZip = (cmd /c 'where 7z.exe 2>nul') | Select-Object -First 1 } catch { }
+    if (-not ($sevenZip -and (Test-Path $sevenZip))) {
+        $sevenZip = Join-Path $Base '7zr.exe'
+        if (-not (Test-Path $sevenZip)) {
+            if (-not (Get-Url 'https://www.7-zip.org/a/7zr.exe' $sevenZip)) {
+                Write-Bad 'could not download 7zr.exe (needed to unpack the .7z archive).'
+                return $false
+            }
+        }
+    }
+    $extractDir = Join-Path $env:TEMP ('ffms2_extract_' + [guid]::NewGuid().ToString('N'))
+    Start-Process -FilePath $sevenZip -ArgumentList "x","`"$archive`"",'-y',"-o`"$extractDir`"" -Wait -NoNewWindow | Out-Null
+    $hit = Get-ChildItem $extractDir -Recurse -Filter 'ffms2.dll' -ErrorAction SilentlyContinue |
+           Select-Object -First 1 -ExpandProperty FullName
+    if (-not $hit) {
+        Write-Bad 'ffms2.dll was not found inside the archive - it is probably corrupted; delete it and re-run.'
+        Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+        return $false
+    }
+    Copy-Item $hit $ffms2 -Force
+    Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $archive -Force -ErrorAction SilentlyContinue
+    if ((Test-Path $ffms2) -and ((Get-Item $ffms2).Length -gt 10MB)) {
+        Write-Ok "source reader installed: $ffms2"
+        return $true
+    }
+    Write-Bad 'ffms2.dll was extracted but failed the size check - remove it and re-run.'
+    return $false
+}
+
+if ($SourceReaderOnly) {
+    $okSR = Ensure-SourceReader
+    if (-not $okSR) { exit 1 }
+    Write-Host ''
+    Write-Ok 'source reader ready - transcode-AI.bat can now open movies.'
+    exit 0
+}
 
 # ---------------------------------------------------------------------
 # 0. Admin + GPU (both tolerant)
@@ -653,6 +719,15 @@ try {
         Write-Wrn 'Fix: re-run this installer with GitHub reachable, or extract the fresh zip over C:\AIVideoEnhancer.'
     }
 } catch { }
+
+# source reader (non-fatal: the transcode runner self-heals it on first run)
+$ffms2Gate = Join-Path (Join-Path $Base 'plugins') 'ffms2.dll'
+if (Test-Path $ffms2Gate) {
+    Write-Ok "source reader (ffms2) installed: $ffms2Gate"
+} else {
+    Write-Wrn 'source reader (ffms2) not installed yet - the first offline transcode'
+    Write-Wrn 'will fetch it automatically (~9 MB), or run:  install.ps1 -SourceReaderOnly'
+}
 
 # ---------------------------------------------------------------------
 # 6b. locate VSScript.dll (the runtime mpv loads for VapourSynth).

@@ -4,6 +4,13 @@
 #  MAX-QUALITY path for 720p: direct 720p -> 1440p (x2), no downscale
 #  to 540p, so real detail is preserved.
 #
+#  OFFLINE (TRANSCODE v2.3): scripts\transcode-runner.ps1 pads the
+#  source up to the next multiple of 16 and passes a SHAPE-MATCHED
+#  x2plus engine via AIVH_OFFLINE_ENGINE (+ AIVH_OFFLINE_IN_W/H).
+#  Non-720p movies then get a true native-resolution 2x upscale
+#  (only zero-impact border padding) instead of being squished into
+#  the 720x1280 engine, which threw away ~25% of a 970p rip's detail.
+#
 #  If the x2plus engine has not been built yet, this script
 #  automatically falls back to the 540p x4plus engine, so mpv profiles
 #  can always reference it safely.
@@ -77,9 +84,26 @@ _ensure_vstrt()
 if not hasattr(core, "trt"):
     raise RuntimeError("vstrt (vs-mlrt) plugin did not load")
 
+src = video_in
+
 # --- engine selection with automatic fallback ------------------------
-use_hd = os.path.isfile(ENGINE_HD)
-if use_hd:
+# (1) OFFLINE shape-matched engine (transcode-runner.ps1 v2.3): the
+#     engine input must fully CONTAIN the source frame - the rest is
+#     pure border padding, never a resample. Needs src, hence this
+#     block sits after 'src = video_in'.
+offline_native = False
+_off_engine = os.environ.get("AIVH_OFFLINE_ENGINE", "")
+try:
+    _off_w = int(os.environ.get("AIVH_OFFLINE_IN_W", "") or 0)
+    _off_h = int(os.environ.get("AIVH_OFFLINE_IN_H", "") or 0)
+except ValueError:
+    _off_w = _off_h = 0
+if (_off_engine and os.path.isfile(_off_engine) and _off_w > 0 and _off_h > 0
+        and _off_w >= src.width and _off_h >= src.height):
+    ENGINE = _off_engine
+    IN_W, IN_H, SCALE = _off_w, _off_h, 2
+    offline_native = True
+elif os.path.isfile(ENGINE_HD):
     ENGINE = ENGINE_HD
     IN_W, IN_H, SCALE = 1280, 720, 2
 else:
@@ -97,8 +121,6 @@ if not os.path.isfile(ENGINE):
     raise RuntimeError(
         "TensorRT engine not found:\n  %s\nBuild engines with build-engines.ps1" % ENGINE)
 
-src = video_in
-
 # --- color metadata ---------------------------------------------------
 # mpv's vf_vapoursynth forbids pulling frames during script evaluation
 # ("Frame requested during init!" -> black dummy frame), so the color
@@ -114,16 +136,27 @@ else:
         src, format=vs.RGBS, matrix_in_s=mat, range_in_s=rng)
 
 # --- fit + pad (aspect-ratio safe), infer, crop -----------------------
-scale = min(IN_W / src.width, IN_H / src.height)
-fw = max(2, int(round(src.width * scale / 2)) * 2)
-fh = max(2, int(round(src.height * scale / 2)) * 2)
-
-fit = core.resize.Lanczos(rgb, fw, fh)
+if offline_native:
+    # native-res mode: NO resample at all, only zero-impact padding up
+    # to the engine's input shape (both dims multiples of 16)
+    fw, fh = src.width, src.height
+    fit = rgb
+else:
+    scale = min(IN_W / src.width, IN_H / src.height)
+    fw = max(2, int(round(src.width * scale / 2)) * 2)
+    fh = max(2, int(round(src.height * scale / 2)) * 2)
+    # identical dims -> skip the resize entirely (it used to be an
+    # unnecessary full-frame Lanczos copy even for exact 720x1280)
+    fit = rgb if (fw, fh) == (src.width, src.height) else core.resize.Lanczos(rgb, fw, fh)
 padded = (fw, fh) != (IN_W, IN_H)
 if padded:
     fit = core.std.AddBorders(fit, right=IN_W - fw, bottom=IN_H - fh)
 
-up = core.trt.Model(fit, engine_path=ENGINE, num_streams=2)
+# RRDB activation memory grows linearly with the pixel count: two
+# overlapping streams fit a 720x1280 input on a 10 GB card, but a
+# 976x1280 shape-matched engine (~1.36x the pixels) runs single-stream.
+streams = 2 if (IN_W * IN_H <= 1280 * 720) else 1
+up = core.trt.Model(fit, engine_path=ENGINE, num_streams=streams)
 
 if padded:
     up = core.std.Crop(up, right=(IN_W - fw) * SCALE, bottom=(IN_H - fh) * SCALE)

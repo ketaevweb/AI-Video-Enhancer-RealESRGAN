@@ -1,8 +1,23 @@
 #requires -version 5.1
 <#
 =====================================================================
- AI Video Enhancer - OFFLINE batch transcoding driver (AIVH TRANSCODE v2.2)
+ AI Video Enhancer - OFFLINE batch transcoding driver (AIVH TRANSCODE v2.3)
 =====================================================================
+ v2.3 hotfixes (both bugs bit on the SECOND real movie):
+  1) The pip-installed VapourSynth ships NO source filters at all
+     (the 'R79 ships ffms2' claim was only ever true for the
+     standalone installer, which is not used here). The wrapper died
+     in the speed test with 'Neither ffms2 nor lsmas is available'.
+     Fix: install.ps1 now delivers the official FFMS2 plugin into
+     $Base\plugins\ffms2.dll, and this runner self-heals: if the dll
+     is missing it invokes install.ps1 -SourceReaderOnly (9 MB,
+     one-time) before starting anything.
+  2) Static-shape engines: the x2plus engine only accepts exactly
+     720x1280, so the old flow SQUISHED a 1280x970 movie down to 720
+     lines first - losing ~25% of its real detail. v2.3 pads the
+     source to the next multiple of 16, automatically builds a
+     shape-matched engine ONCE per resolution (build-engines.ps1
+     -EnsureShape) and renders a true native-resolution 2x upscale.
  v2.2 hotfix: the runner fed the PROFILE vpy straight to vspipe, but a
  profile needs the 'video_in' clip that only the offline wrapper
  (transcode-source.vpy) provides when there is no mpv - the first real
@@ -256,7 +271,7 @@ Write-Ok "source: $InputFile"
 # 1. profile + engine pre-check (fail in seconds, not after hours)
 # ------------------------------------------------------------------
 $profiles = @{
-    hd      = @{ Vpy='enhance-film-hd.vpy';  Suffix='_AI';       Label='RealESRGAN_x2plus RRDB, max quality (~4-6 fps on RTX 3080)' }
+    hd      = @{ Vpy='enhance-film-hd.vpy';  Suffix='_AI';       Label='RealESRGAN_x2plus RRDB, max quality (~3-6 fps on RTX 3080)' }
     fast    = @{ Vpy='enhance-film.vpy';     Suffix='_AI-fast';  Label='realesr-general-x4v3 compact (~10-20 fps, 2-3x faster than hd)' }
     general = @{ Vpy='enhance-general.vpy';  Suffix='_AI-gen';   Label='general profile: x4v3 + texture restore (~10-20 fps)' }
     anime   = @{ Vpy='enhance-anime.vpy';    Suffix='_AI-anime'; Label='animevideov3 (outputs 4K - the CPU encoder will be the bottleneck)' }
@@ -309,6 +324,29 @@ function Find-Vspipe {
 $vspipe = Find-Vspipe
 if (-not $vspipe) { Write-Bad 'vspipe.exe not found - re-run install.ps1'; exit 1 }
 Write-Ok "VapourSynth: $vspipe"
+
+# ------------------------------------------------------------------
+# 2b. source reader (ffms2). A pip-installed VapourSynth ships NO
+#     source filters at all, so the wrapper cannot open any movie
+#     without it (that was the 'Neither ffms2 nor lsmas is available'
+#     crash). install.ps1 drops the official FFMS2 plugin into
+#     $Base\plugins\ffms2.dll; if it is missing, fetch it right here
+#     (~9 MB + 0.5 MB unpacker, one-time) instead of failing later.
+# ------------------------------------------------------------------
+$pluginsDir = Join-Path $Base 'plugins'
+$ffms2Dll   = Join-Path $pluginsDir 'ffms2.dll'
+$lsmasDll   = Join-Path $pluginsDir 'lsmas.dll'
+if (-not ((Test-Path -LiteralPath $ffms2Dll) -or (Test-Path -LiteralPath $lsmasDll))) {
+    Write-Wrn 'no source reader (ffms2) - pip-installed VapourSynth ships none.'
+    Write-Host '    Fetching the official FFMS2 plugin (~9 MB, one-time)...'
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Base 'install.ps1') -Base $Base -SourceReaderOnly
+    if (-not ((Test-Path -LiteralPath $ffms2Dll) -or (Test-Path -LiteralPath $lsmasDll))) {
+        Write-Bad "still no source reader in $pluginsDir - the wrapper cannot open the movie."
+        Write-Bad 'Fix: run install.ps1 once with internet access, then start this job again.'
+        exit 1
+    }
+}
+if (Test-Path -LiteralPath $ffms2Dll) { Write-Ok "source reader: $ffms2Dll" }
 
 # ------------------------------------------------------------------
 # 3. ffmpeg + ffprobe (auto-download on first use)
@@ -440,6 +478,62 @@ if ($nb -le 0) { Write-Bad 'cannot determine the frame count (live stream?); a t
 Write-Ok ("video: {0}x{1}, {2} frames, {3:F3} fps, length {4}" -f $st.width, $st.height, $nb, $fps, (Format-Duration $dur))
 
 # ------------------------------------------------------------------
+# 4b. offline native-res geometry (v2.3). The x2plus engines are
+#     STATIC-shape (TensorRT): the 720x1280 engine forced every
+#     non-720p movie to be squished down to 720 lines first - a
+#     970p rip lost a quarter of its real detail. v2.3 pads the
+#     source up to the next multiple of 16 and uses a shape-matched
+#     engine instead: true 2x at native resolution, padding cropped
+#     back off afterwards. The one-time engine build (~5-15 min per
+#     resolution) is fully automatic; every later movie with the
+#     same resolution starts instantly.
+# ------------------------------------------------------------------
+$env:AIVH_OFFLINE_ENGINE = ''
+$env:AIVH_OFFLINE_IN_W   = ''
+$env:AIVH_OFFLINE_IN_H   = ''
+if ($Profile -eq 'hd') {
+    $srcW = [int]$st.width
+    $srcH = [int]$st.height
+    $padW = [int][math]::Ceiling($srcW / 16) * 16
+    $padH = [int][math]::Ceiling($srcH / 16) * 16
+    $onnx = Join-Path (Join-Path $Base 'models') 'RealESRGAN_x2plus.onnx'
+    # RRDB activation memory grows linearly with the pixel count; keep
+    # the engine input under ~1.4 MP so a 10 GB card (RTX 3080) stays
+    # comfortable (976x1280 = 1.25 MP). Bigger sources keep the proven
+    # fit-to-720p path instead of risking VRAM exhaustion mid-render.
+    if ($padW * $padH -gt 1400000) {
+        Write-Wrn ("source {0}x{1} is too large for a native-res RRDB engine on a 10 GB card" -f $srcW, $srcH)
+        Write-Wrn '-> the movie will be fitted into the 720x1280 engine (slightly softer result).'
+    } elseif (-not (Test-Path -LiteralPath $onnx)) {
+        Write-Wrn 'models\RealESRGAN_x2plus.onnx is missing - cannot build a shape-matched engine.'
+        Write-Wrn '-> the movie will be fitted into the 720x1280 engine (slightly softer result).'
+    } else {
+        $engName = 'RealESRGAN_x2plus_1x3x{0}x{1}_fp16.engine' -f $padH, $padW
+        $engPath = Join-Path (Join-Path $Base 'engines') $engName
+        if (Test-Path -LiteralPath $engPath) {
+            Write-Ok ("engine: {0} (shape-matched -> native-res 2x)" -f $engName)
+        } else {
+            Write-Step ("one-time engine build for this movie's resolution")
+            Write-Host ("    {0}x{1} -> engine input {2}x{3} (padded to x16) -> output {4}x{5}" -f `
+                $srcW, $srcH, $padW, $padH, ($srcW * 2), ($srcH * 2))
+            Write-Host '    RRDB network: expect 5-15 minutes. Built ONCE per resolution.' -ForegroundColor Yellow
+            & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Base 'build-engines.ps1') -Base $Base -EnsureShape ("{0}x{1}" -f $padH, $padW)
+            if (-not (Test-Path -LiteralPath $engPath)) {
+                Write-Wrn 'shape-matched engine build FAILED - falling back to the 720x1280 engine.'
+                Write-Wrn 'Inspect logs\build_RealESRGAN_x2plus.*.err.log, then simply start this job again.'
+            } else {
+                Write-Ok ("engine built: {0} (shape-matched -> native-res 2x)" -f $engName)
+            }
+        }
+        if (Test-Path -LiteralPath $engPath) {
+            $env:AIVH_OFFLINE_ENGINE = $engPath
+            $env:AIVH_OFFLINE_IN_W   = "$padW"
+            $env:AIVH_OFFLINE_IN_H   = "$padH"
+        }
+    }
+}
+
+# ------------------------------------------------------------------
 # 5. output paths + free space
 # ------------------------------------------------------------------
 $srcDir   = Split-Path -Parent $InputFile
@@ -510,7 +604,7 @@ $env:AIVH_OUT               = $partFile
 $env:AIVH_LOG               = $logFile
 Remove-Item -LiteralPath $sample -Force -ErrorAction SilentlyContinue
 
-Write-Step ("Speed test: AI-rendering frames {0}-{1} (~{2:F0} min into the movie, takes ~2 min)..." -f ($startF + 1), $endF, ($startF / $fps / 60))
+Write-Step ("Speed test: AI-rendering frames {0}-{1} (~{2:F0} min into the movie, takes ~2-4 min)..." -f ($startF + 1), $endF, ($startF / $fps / 60))
 $benchCmd = Join-Path $env:TEMP 'aivh_transcode_bench.cmd'
 
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -523,7 +617,7 @@ if (-not $pipeOk -or -not (Test-Path -LiteralPath $sample)) {
     } else {
         Write-Bad "(log not found: $logFile)"
     }
-    Write-Bad 'Typical causes: engine not built (run build-engines.ps1), ffms2/lsmas missing, or an unreadable source file.'
+    Write-Bad 'Typical causes: engine not built (run build-engines.ps1), ffms2 source reader missing (run install.ps1), or an unreadable source file.'
     exit 1
 }
 $fpsMeas = $probeN / $sw.Elapsed.TotalSeconds
