@@ -1,8 +1,18 @@
 #requires -version 5.1
 <#
 =====================================================================
- AI Video Enhancer - OFFLINE batch transcoding driver (AIVH TRANSCODE v2)
+ AI Video Enhancer - OFFLINE batch transcoding driver (AIVH TRANSCODE v2.1)
 =====================================================================
+ v2.1 hotfixes (both bugs bit on the very first real run):
+  1) Windows PowerShell 5.1 turns ANY stderr line of a redirected
+     native command into a terminating NativeCommandError. VSPipe
+     always prints a harmless API3 deprecation warning to stderr ->
+     the run died at the first `vspipe --info 2>$null`. All such
+     calls now go through Invoke-Quiet (stderr discarded safely).
+  2) The y4m demuxer probe used the wrong format name. FFmpeg calls
+     it 'yuv4mpegpipe' - 'y4m' is only a file extension, '-f y4m'
+     fails on EVERY build ('Unknown input format'). The old probe
+     misreported "no y4m demuxer" everywhere; both fixed.
  The realtime film-hd path (RRDB x2plus, ~5 fps on an RTX 3080) is
  impossible to watch - but it makes a perfect OVERNIGHT JOB: this
  script renders the movie through the AI frame by frame (vspipe)
@@ -64,6 +74,23 @@ function Format-Duration([double]$sec) {
     return ('{0} s' -f [int]$ts.TotalSeconds)
 }
 
+# ------------------------------------------------------------------
+# PowerShell 5.1 landmine (the v2.1 hotfix): with
+# $ErrorActionPreference = 'Stop', a native exe that writes to stderr
+# WHILE PowerShell redirects that stderr (2>$null / 2>&1) raises a
+# terminating NativeCommandError - even for a pure warning. VSPipe
+# ALWAYS prints an API3 deprecation notice to stderr, ffmpeg prints
+# codec warnings there - so any plain `exe ... 2>$null` under EAP=Stop
+# is a time bomb. Invoke-Quiet relaxes EAP only for the duration of
+# the call: stdout still flows back to the caller, stderr is
+# discarded, nothing throws - identical behavior on PS 5.1 and PS 7.
+# ------------------------------------------------------------------
+function Invoke-Quiet([string]$Exe, [string[]]$ExeArgs) {
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $Exe @ExeArgs 2>$null } finally { $ErrorActionPreference = $old }
+}
+
 # side-by-side proof clip: LEFT = the original plainly upscaled (lanczos,
 # what you see today), RIGHT = the AI-rendered result. Both from the same
 # 25 s piece. Trim/fps are done in filters (no input -ss): both branches
@@ -80,20 +107,21 @@ function Build-Compare {
     $en = ($StartSec + $LenSec).ToString($ci)
     $fc = "[0:v]trim=start=$ss:end=$en,setpts=PTS-STARTPTS,fps=$Rate,scale=${w}:${h}:flags=lanczos,setsar=1[l];" +
           "[1:v]fps=$Rate,setsar=1[r];[l][r]hstack=shortest=1,format=yuv420p[v]"
-    & $ffmpeg -hide_banner -loglevel error -nostdin -y `
-        -i $SourceFile -i $SampleFile `
-        -filter_complex $fc -map '[v]' -map 1:a? `
-        -c:v libx264 -preset veryfast -crf 16 -c:a copy $OutFile 2>$null
+    Invoke-Quiet $ffmpeg @('-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
+        '-i', $SourceFile, '-i', $SampleFile,
+        '-filter_complex', $fc, '-map', '[v]', '-map', '1:a?',
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '16', '-c:a', 'copy', $OutFile) | Out-Null
     return ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $OutFile))
 }
 
 # ------------------------------------------------------------------
 # pipe builder / runner.
-# Primary transport is y4m (self-describing: survives any output
+# Primary transport is Y4M (self-describing: survives any output
 # geometry, incl. the film-hd 4K fallback engine and scope-ratio
-# crops). If the installed ffmpeg happens to be built WITHOUT the
-# y4m demuxer (rare; some distro patches do that), it automatically
-# retries with a rawvideo pipe using geometry from `vspipe --info`.
+# crops). NOTE the format name: ffmpeg's demuxer is 'yuv4mpegpipe'
+# ('y4m' is only a file extension; '-f y4m' fails on every build).
+# If a build genuinely lacks the demuxer, it automatically retries
+# with a rawvideo pipe using geometry from `vspipe --info`.
 # All paths travel as environment variables -> Unicode-safe.
 # ------------------------------------------------------------------
 function New-PipeCmdFile([string]$Path, [bool]$Fragment) {
@@ -169,12 +197,16 @@ function Start-LivePipe([string]$CmdFile) {
 }
 
 function Invoke-Pipe([string]$CmdFile, [bool]$Fragment, [switch]$Live) {
-    $env:AIVH_INARGS = '-f y4m -i -'
+    # v2.1: correct demuxer name ('yuv4mpegpipe' - 'y4m' exists only as a
+    # file extension and '-f y4m' is rejected by every ffmpeg build), and
+    # the probe goes through Invoke-Quiet so the VSPipe/ffmpeg stderr
+    # cannot kill the script under PowerShell 5.1 + EAP='Stop'.
+    $env:AIVH_INARGS = '-f yuv4mpegpipe -i -'
     $haveY4m = $false
-    try { $haveY4m = (& $ffmpeg -hide_banner -demuxers 2>$null | Select-String -Quiet '\sy4m\s') } catch { }
+    try { $haveY4m = [bool]((Invoke-Quiet $ffmpeg @('-hide_banner', '-demuxers')) | Select-String -SimpleMatch 'yuv4mpegpipe') } catch { }
     if (-not $haveY4m) {
-        Write-Wrn 'this ffmpeg build has no y4m demuxer - using a rawvideo pipe (geometry via vspipe --info)...'
-        $infoTxt = (& $vspipe --info $vpy - 2>$null) -join "`n"
+        Write-Wrn 'this ffmpeg build has no yuv4mpegpipe (y4m) demuxer - using a rawvideo pipe (geometry via vspipe --info)...'
+        $infoTxt = (Invoke-Quiet $vspipe @('--info', $vpy, '-')) -join "`n"
         $w = 0; $h = 0; $fn = 0; $fd = 1
         if ($infoTxt -match 'Width:\s*(\d+)')  { $w  = [int]$Matches[1] }
         if ($infoTxt -match 'Height:\s*(\d+)') { $h  = [int]$Matches[1] }
@@ -183,7 +215,12 @@ function Invoke-Pipe([string]$CmdFile, [bool]$Fragment, [switch]$Live) {
             Write-Bad 'could not determine the render output geometry (vspipe --info).'
             return $false
         }
-        $env:AIVH_INARGS = "-f rawvideo -pix_fmt yuv420p10le -video_size ${w}x${h} -r $fn/$fd -i -"
+        # all v9 profiles render 10-bit 4:2:0; honour P8/P16 variants in
+        # case a future profile changes the output depth
+        $pf = 'yuv420p10le'
+        if    ($infoTxt -match 'Format Name:\s*YUV420P8')  { $pf = 'yuv420p' }
+        elseif ($infoTxt -match 'Format Name:\s*YUV420P16') { $pf = 'yuv420p16le' }
+        $env:AIVH_INARGS = "-f rawvideo -pix_fmt $pf -video_size ${w}x${h} -r $fn/$fd -i -"
     }
     New-PipeCmdFile $CmdFile $Fragment
     if ($Live) { return (Start-LivePipe $CmdFile) }
@@ -339,7 +376,7 @@ Write-Ok "ffmpeg: $ffmpeg"
 # ------------------------------------------------------------------
 if ($Encoder -eq 'nvenc') {
     $hasNvenc = $false
-    try { $hasNvenc = (& $ffmpeg -hide_banner -encoders 2>$null | Select-String -Quiet 'hevc_nvenc') } catch { }
+    try { $hasNvenc = [bool]((Invoke-Quiet $ffmpeg @('-hide_banner', '-encoders')) | Select-String -SimpleMatch 'hevc_nvenc') } catch { }
     if (-not $hasNvenc) {
         Write-Bad 'this ffmpeg build has no hevc_nvenc - use -Encoder x265 (default) or another ffmpeg build.'
         exit 1
