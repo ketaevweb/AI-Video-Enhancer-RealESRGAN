@@ -15,7 +15,7 @@
 #  Used by mpv:  --vf=vapoursynth=enhance-film.vpy
 #  mpv provides the current frame as the "video_in" clip.
 # =====================================================================
-# AIVH PIPELINE VERSION: QUALITY v8
+# AIVH PIPELINE VERSION: QUALITY v9
 import os
 import vapoursynth as vs
 from vapoursynth import core

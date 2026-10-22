@@ -9,7 +9,7 @@
 #  can always reference it safely.
 #  QUALITY v8 note: unchanged - this stays the OFFLINE max-quality
 #  path (RRDB is far too heavy for realtime viewing).
-# AIVH PIPELINE VERSION: QUALITY v8
+# AIVH PIPELINE VERSION: QUALITY v9
 # =====================================================================
 import os
 import vapoursynth as vs

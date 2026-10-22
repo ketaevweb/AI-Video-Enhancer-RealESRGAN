@@ -44,10 +44,25 @@
 #     height >= 600 OR width >= 1200. The BT.601/709 matrix guess uses
 #     the same rule - a 1280-wide rip is 709-era, not 601.
 #
+#  QUALITY v9 - AI on HD sources again (direct user feedback: with the
+#  v8 AI-free HD bypass "general does nothing, does not use the GPU,
+#  jaggies/noise from the compressed stream remain"). Most of the
+#  user's library is low-bitrate streaming rips (1 Mbps-class 720p),
+#  where the compact model genuinely helps: it removes compression
+#  noise, banding and jaggies. The cartoon risk that motivated v8 is
+#  mitigated: this path uses the GENERAL (photo-leaning) x4v3 model,
+#  never the anime one, and keeps the texture-restore blend on top.
+#  - AIVH_HDAI env var: 1 (default) = model runs on HD too;
+#    0 = v8 behavior (AI-free Spline36 bypass on HD).
+#  - The AI-free natural view is also one hotkey away: Ctrl+0 (plain
+#    mpv with ewa_lanczos + deband from mpv.conf).
+#  - Animation (anime/Disney/Pixar rips) still looks best and plays
+#    fastest with the dedicated anime profile (Ctrl+n).
+#
 #  Used by mpv:  --vf=vapoursynth=enhance-general.vpy
 #  mpv provides the current frame as the "video_in" clip.
 # =====================================================================
-# AIVH PIPELINE VERSION: QUALITY v8
+# AIVH PIPELINE VERSION: QUALITY v9
 import os
 import vapoursynth as vs
 from vapoursynth import core
@@ -61,6 +76,9 @@ OUT_W  = 2560    # 2K container for the HD bypass path
 OUT_H  = 1440
 
 DETAIL = min(max(float(os.environ.get("AIVH_DETAIL", "0.35")), 0.0), 1.0)
+# v9: run the model on HD sources too (default). AIVH_HDAI=0 restores
+# the v8 AI-free HD bypass. Ctrl+0 in mpv = AI-free view at any time.
+HDAI = os.environ.get("AIVH_HDAI", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
 # --- resilient plugin loader (FIX v3: vstrt.dll in v15+) -------------
@@ -127,12 +145,14 @@ is_hd = (src.height >= 600) or (src.width >= 1200)
 mat = "709" if is_hd else "470bg"
 rng = "limited"   # YUV handed over by mpv is virtually always limited range
 
-if is_hd:
+use_ai = HDAI or (not is_hd)   # SD always; HD too since v9 (HDAI=1 default)
+
+if not use_ai:
     # ---------------------------------------------------------------
-    # HD path (720p/1080p, incl. scope rips like 1280x538): NO neural
-    # network. Honest Spline36 into the 2K container, aspect preserved,
-    # output size may be smaller than 2560x1440 for wide aspect ratios
-    # - mpv scales to the window. YUV->YUV: NO matrix params allowed
+    # AI-free HD bypass (AIVH_HDAI=0): NO neural network. Honest
+    # Spline36 into the 2K container, aspect preserved, output size
+    # may be smaller than 2560x1440 for wide aspect ratios - mpv
+    # scales to the window. YUV->YUV: NO matrix params allowed
     # (v8a hotfix - they trigger a bogus colorspace conversion and
     # zimg error 3074).
     # ---------------------------------------------------------------
@@ -144,7 +164,11 @@ if is_hd:
         range_s="limited", dither_type="ordered")
 else:
     # ---------------------------------------------------------------
-    # SD path (480p/576p): general-x4v3 + texture restore.
+    # AI path: realesr-general-x4v3 + texture restore.
+    # SD (480p/576p) - always; HD (720p-class) - since v9 (HDAI=1
+    # default): the model eats compression noise/banding/jaggies from
+    # streaming rips, the blend below keeps the real source texture
+    # so live action stays natural (NOT the anime model).
     # ---------------------------------------------------------------
     if not os.path.isfile(ENGINE):
         raise RuntimeError(
@@ -186,6 +210,8 @@ else:
     # back on top of the model output. Real grain/skin/fabric texture
     # returns, the plastic "AI cartoon" look disappears. Luma gets the
     # full share, chroma half (SD chroma is blotchy 4:2:0 - keep less).
+    # On HD sources this is what keeps real 720p detail over the model's
+    # 360p-class reconstruction - raise AIVH_DETAIL to 0.5 for more.
     # YUV->YUV same family: NO matrix_s (v8a hotfix - see header).
     if DETAIL > 0.001:
         orig = core.resize.Spline36(

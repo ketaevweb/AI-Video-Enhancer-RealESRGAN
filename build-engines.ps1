@@ -141,8 +141,8 @@ $timingCache = Join-Path $EnginesDir 'timing.cache'
 $batch       = Join-Path $LogsDir  'run_trtexec.cmd'
 
 $engines = @(
-    @{ Model='realesr-animevideov3';      Onnx='realesr-animevideov3.onnx';      H=360; W=640;  Scale=4; Note='compact, 2K realtime engine - PRIMARY (enhance-general.vpy)' },
-    @{ Model='realesr-general-x4v3';      Onnx='realesr-general-x4v3.onnx';      H=360; W=640;  Scale=4; Note='compact detail mode (enhance-film.vpy)' },
+    @{ Model='realesr-animevideov3';      Onnx='realesr-animevideov3.onnx';      H=360; W=640;  Scale=4; Note='compact, fast 2K engine, anime look (optional, not used by realtime vpys)' },
+    @{ Model='realesr-general-x4v3';      Onnx='realesr-general-x4v3.onnx';      H=360; W=640;  Scale=4; Note='compact general model - AI path of enhance-general.vpy + enhance-film.vpy' },
     @{ Model='realesr-general-x4v3';      Onnx='realesr-general-x4v3.onnx';      H=540; W=960;  Scale=4; Note='compact, legacy 4K internal size (kept for film-hd fallback)' },
     @{ Model='realesr-general-wdn-x4v3';  Onnx='realesr-general-wdn-x4v3.onnx';  H=540; W=960;  Scale=4; Note='compact, denoise-only variant (no longer used by realtime vpys)' },
     @{ Model='realesr-animevideov3';      Onnx='realesr-animevideov3.onnx';      H=540; W=960;  Scale=4; Note='compact, anime/video model (enhance-anime.vpy)' },

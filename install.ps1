@@ -625,13 +625,13 @@ Write-Ok "mpv config deployed to $portable (hotkeys: Ctrl+a films / Ctrl+f detai
 Write-Step 'Verifying pipeline version'
 $genVpy = Join-Path $Base 'enhance-general.vpy'
 $marker = $false
-try { $marker = Select-String -Path $genVpy -Pattern 'QUALITY v8' -Quiet } catch { }
+try { $marker = Select-String -Path $genVpy -Pattern 'QUALITY v9' -Quiet } catch { }
 if ($marker) {
-    Write-Ok 'pipeline version: QUALITY v8 (natural film look: HD = AI-free Spline36, SD = x4v3 + texture restore)'
+    Write-Ok 'pipeline version: QUALITY v9 (AI + texture restore on ALL sources; Ctrl+0 = AI-free natural view)'
 } else {
-    Write-Bad 'pipeline files are STALE - no QUALITY v8 marker in enhance-general.vpy.'
-    Write-Host '    Old files make live-action movies look like cartoons (anime model'
-    Write-Host '    as the primary engine) and/or play at 7 fps.'
+    Write-Bad 'pipeline files are STALE - no QUALITY v9 marker in enhance-general.vpy.'
+    Write-Host '    Old files either make live-action movies look like cartoons (PERF v6),'
+    Write-Host '    skip the AI on HD sources (QUALITY v8), or crash with Resize error 3074.'
     Write-Host '    Two ways to fix:'
     Write-Host '      a) restore internet / VPN so GitHub is reachable, then re-run install.ps1'
     Write-Host '      b) download AI-Video-Enhancer-RealESRGAN.zip from the chat, extract it'
@@ -709,8 +709,8 @@ start "" "$mpvExe" --vf="vapoursynth=enhance-$profile.vpy:concurrent-frames=6" -
 Write-Bat (Join-Path $Base 'watch-AI-general-denoise.bat') @"
 @echo off
 rem AI enhancer: general profile.
-rem QUALITY v8: identical to watch-AI-general.bat (kept so old shortcuts
-rem keep working): HD sources play AI-free, SD get x4v3 + texture restore.
+rem QUALITY v9: identical to watch-AI-general.bat (kept so old shortcuts
+rem keep working): AI + texture restore on ALL sources; Ctrl+0 = AI-free.
 set "AIVH=$Base"
 $pathLine
 cd /d "%AIVH%"
@@ -763,7 +763,7 @@ Write-Host ' Setup complete.' -ForegroundColor Green
 Write-Host '=====================================================' -ForegroundColor Cyan
 Write-Host ''
 Write-Host '  How to watch:'
-Write-Host "    drag a movie onto  $Base\watch-AI-general.bat   (PRIMARY for films: HD plays natural AI-free, SD with AI + texture restore)"
+Write-Host "    drag a movie onto  $Base\watch-AI-general.bat   (PRIMARY for films: AI + texture restore on HD and SD; Ctrl+0 = AI-free natural view)"
 Write-Host "    or onto            $Base\watch-AI-film.bat      (opt-in detail mode ~10-15 fps, synthetic look)"
 Write-Host "    or onto            $Base\watch-AI-anime.bat     (anime/animation ONLY - paints live action)"
 Write-Host "    nothing happens?   drag the movie onto $Base\watch-AI-debug.bat"

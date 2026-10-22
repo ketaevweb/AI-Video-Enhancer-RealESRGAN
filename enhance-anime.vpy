@@ -6,7 +6,7 @@
 #  QUALITY v8 note: the "cartoon" rendering is CORRECT here - this
 #  model is meant for actual anime/animation. For live action use
 #  enhance-general.vpy instead.
-# AIVH PIPELINE VERSION: QUALITY v8
+# AIVH PIPELINE VERSION: QUALITY v9
 # =====================================================================
 import os
 import vapoursynth as vs
