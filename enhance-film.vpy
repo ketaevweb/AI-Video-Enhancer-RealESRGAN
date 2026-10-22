@@ -98,7 +98,7 @@ src = video_in  # provided by mpv
 #    frame), so the matrix comes from the resolution instead of props:
 #    < 600 lines (480p/576p) -> BT.601,   720p and above -> BT.709
 # ---------------------------------------------------------------------
-mat = "709" if src.height >= 600 else "470bg"
+mat = "709" if (src.height >= 600 or src.width >= 1200) else "470bg"
 rng = "limited"   # YUV handed over by mpv is virtually always limited range
 
 # ---------------------------------------------------------------------

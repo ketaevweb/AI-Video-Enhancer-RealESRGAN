@@ -29,6 +29,21 @@
 #      0.0 = pure model output (max "detail", more plastic)
 #      0.6+ = heavily natural, softer
 #
+#  HOTFIX v8a (two real bugs found by reproducing the user's crash on a
+#  1280x538 movie):
+#  1) "Resize error 3074: no path between colorspaces (2/2/2 => 5/2/2)":
+#     matrix_s was passed to a SAME-FAMILY YUV->YUV resize. VapourSynth
+#     then tries a full colorspace conversion from the frame's
+#     unspecified matrix (2) to the requested one (5=BT.470bg) and zimg
+#     refuses. Matrix params are ONLY valid when the color family
+#     changes (YUV<->RGB); they are now dropped from YUV->YUV hops.
+#     (Verified in a local VapourSynth R79 repro: full fixed SD+HD
+#     chains pass, including the texture-restore Merge.)
+#  2) Scope "720p" rips like 1280x538 were classified as SD (height-only
+#     check) and wrongly pushed through the model. HD is now
+#     height >= 600 OR width >= 1200. The BT.601/709 matrix guess uses
+#     the same rule - a 1280-wide rip is 709-era, not 601.
+#
 #  Used by mpv:  --vf=vapoursynth=enhance-general.vpy
 #  mpv provides the current frame as the "video_in" clip.
 # =====================================================================
@@ -105,22 +120,27 @@ src = video_in
 # mpv's vf_vapoursynth forbids pulling frames during script evaluation
 # ("Frame requested during init!" -> black dummy frame), so the color
 # matrix is derived from the resolution instead of per-frame props:
-#   < 600 lines (480p/576p DVD-era rips) -> BT.601,   720p+ -> BT.709
+#   720p-class sources (height >= 600 OR width >= 1200, which covers
+#   scope rips like 1280x538) -> BT.709,  smaller -> BT.601 (470bg)
 # This matches virtually every movie rip in existence.
-mat = "709" if src.height >= 600 else "470bg"
+is_hd = (src.height >= 600) or (src.width >= 1200)
+mat = "709" if is_hd else "470bg"
 rng = "limited"   # YUV handed over by mpv is virtually always limited range
 
-if src.height >= 600:
+if is_hd:
     # ---------------------------------------------------------------
-    # HD path (720p/1080p): NO neural network. Honest Spline36 into
-    # the 2K container, aspect preserved, output size may be smaller
-    # than 2560x1440 for wide aspect ratios - mpv scales to the window.
+    # HD path (720p/1080p, incl. scope rips like 1280x538): NO neural
+    # network. Honest Spline36 into the 2K container, aspect preserved,
+    # output size may be smaller than 2560x1440 for wide aspect ratios
+    # - mpv scales to the window. YUV->YUV: NO matrix params allowed
+    # (v8a hotfix - they trigger a bogus colorspace conversion and
+    # zimg error 3074).
     # ---------------------------------------------------------------
     scale = min(OUT_W / src.width, OUT_H / src.height)
     fw = max(2, int(round(src.width * scale / 2)) * 2)
     fh = max(2, int(round(src.height * scale / 2)) * 2)
     out = core.resize.Spline36(
-        src, fw, fh, format=vs.YUV420P10, matrix_s=mat,
+        src, fw, fh, format=vs.YUV420P10,
         range_s="limited", dither_type="ordered")
 else:
     # ---------------------------------------------------------------
@@ -166,9 +186,10 @@ else:
     # back on top of the model output. Real grain/skin/fabric texture
     # returns, the plastic "AI cartoon" look disappears. Luma gets the
     # full share, chroma half (SD chroma is blotchy 4:2:0 - keep less).
+    # YUV->YUV same family: NO matrix_s (v8a hotfix - see header).
     if DETAIL > 0.001:
         orig = core.resize.Spline36(
-            src, out.width, out.height, format=vs.YUV420P10, matrix_s=mat,
+            src, out.width, out.height, format=vs.YUV420P10,
             range_s="limited", dither_type="ordered")
         out = core.std.Merge(
             out, orig, weight=[DETAIL, DETAIL * 0.5, DETAIL * 0.5])

@@ -82,7 +82,7 @@ src = video_in
 # matrix is derived from the resolution instead of per-frame props:
 #   < 600 lines (480p/576p DVD-era rips) -> BT.601,   720p+ -> BT.709
 # This matches virtually every movie rip in existence.
-mat = "709" if src.height >= 600 else "470bg"
+mat = "709" if (src.height >= 600 or src.width >= 1200) else "470bg"
 rng = "limited"   # YUV handed over by mpv is virtually always limited range
 
 if src.format.color_family == vs.RGB:
