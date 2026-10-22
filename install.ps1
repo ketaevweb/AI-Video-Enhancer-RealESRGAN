@@ -71,6 +71,14 @@
      always visible;
    - VSScript.dll locator for pip-installed VapourSynth searched ONE
      DIRECTORY TOO HIGH (Split-Path -Parent of the python root).
+
+ FIX v10: -SourceReaderOnly (and the transcode runner's one-time ffms2
+   self-heal) died with "Get-Url is not recognized as the name of a
+   cmdlet": the download helper was defined ~90 lines BELOW its first
+   call, and PowerShell only knows a function after its definition
+   line has EXECUTED. The helper - together with the system-proxy
+   detection it depends on - now lives ABOVE the source-reader code,
+   so the one-time ffms2 fetch actually works.
 =====================================================================
 #>
 param(
@@ -107,6 +115,61 @@ Write-Host "    project : $ProjectRoot"
 Write-Host "    runtime : $Base"
 Write-Host ''
 
+# ---------------------------------------------------------------------
+# helper: safe downloads. curl.exe is fast but IGNORES the Windows
+# system proxy (VPN/proxy clients set it in the registry - without it
+# raw.githubusercontent.com is unreachable from some networks while
+# the browser works fine). The proxy is therefore passed to curl
+# explicitly, and Invoke-WebRequest (system TLS/proxy stack) is the
+# fallback for both probing and downloading.
+# FIX v10: this block MUST stay above Ensure-SourceReader / the
+# -SourceReaderOnly branch - it is called from there.
+# ---------------------------------------------------------------------
+$SysProxy = $null
+try {
+    $reg = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction Stop
+    if ($reg.ProxyEnable -eq 1 -and $reg.ProxyServer) {
+        $p = "$($reg.ProxyServer)"
+        if ($p -match '=') {   # per-scheme form "http=host:port;https=host:port"
+            $part = ($p -split ';' | Where-Object { $_ -match '^https?=' } | Select-Object -First 1)
+            if ($part) { $p = ($part -split '=', 2)[1] }
+        }
+        if ($p) {
+            if ($p -notmatch '^https?://') { $p = "http://$p" }
+            $SysProxy = $p
+        }
+    }
+} catch { }
+if ($SysProxy) { Write-Host "    using Windows system proxy: $SysProxy" }
+
+function Get-Url {
+    param([string]$Url, [string]$OutFile, [int]$TimeoutSec = 7200)
+    $tmp = "$OutFile.part"
+    # attempt 1: curl.exe (with the system proxy, if one is configured)
+    try {
+        $proxyLine = if ($SysProxy) { "--proxy `"$SysProxy`"" } else { "" }
+        cmd /c "`"$env:SystemRoot\System32\curl.exe`" -L --fail --retry 3 --retry-delay 2 $proxyLine -o `"$tmp`" --connect-timeout 30 --max-time $TimeoutSec `"$Url`" 2>nul"
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $tmp)) {
+            Move-Item $tmp $OutFile -Force
+            return $true
+        }
+    } catch { }
+    # attempt 2: Invoke-WebRequest (system TLS/proxy stack, slower but
+    # succeeds where curl gets throttled/blocked)
+    try {
+        $prev = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $Url -OutFile $tmp -TimeoutSec $TimeoutSec -UseBasicParsing | Out-Null
+        $ProgressPreference = $prev
+        if (Test-Path $tmp) {
+            Move-Item $tmp $OutFile -Force
+            return $true
+        }
+    } catch { }
+    $ProgressPreference = 'SilentlyContinue'
+    if (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+    return $false
+}
+
 function Ensure-SourceReader {
     # The ffms2 SOURCE FILTER is mandatory for offline transcoding (it is
     # what opens the movie when there is no mpv). pip-installed VapourSynth
@@ -123,7 +186,11 @@ function Ensure-SourceReader {
     }
     Write-Step 'Fetching the source reader (official FFMS2 plugin, ~9 MB, one-time)'
     if (-not (Test-Path $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
-    $archive = Join-Path $env:TEMP 'ffms2-5.0-msvc.7z'
+    # TEMP fallback: $env:TEMP is always set on Windows, but if a exotic
+    # environment ever leaves it empty, fall back to $Base instead of
+    # crashing inside Join-Path with a null argument.
+    $TmpRoot = if ($env:TEMP) { $env:TEMP } else { $Base }
+    $archive = Join-Path $TmpRoot 'ffms2-5.0-msvc.7z'
     $url = 'https://github.com/FFMS/ffms2/releases/download/5.0/ffms2-5.0-msvc.7z'
     if (-not ((Test-Path $archive) -and ((Get-Item $archive).Length -gt 5MB))) {
         if (-not (Get-Url $url $archive)) {
@@ -142,7 +209,7 @@ function Ensure-SourceReader {
             }
         }
     }
-    $extractDir = Join-Path $env:TEMP ('ffms2_extract_' + [guid]::NewGuid().ToString('N'))
+    $extractDir = Join-Path $TmpRoot ('ffms2_extract_' + [guid]::NewGuid().ToString('N'))
     Start-Process -FilePath $sevenZip -ArgumentList "x","`"$archive`"",'-y',"-o`"$extractDir`"" -Wait -NoNewWindow | Out-Null
     $hit = Get-ChildItem $extractDir -Recurse -Filter 'ffms2.dll' -ErrorAction SilentlyContinue |
            Select-Object -First 1 -ExpandProperty FullName
@@ -192,59 +259,6 @@ try {
 } catch { }
 if (-not $gpuName) {
     Write-Wrn 'Could not query NVIDIA driver. AI inference needs a working NVIDIA driver!'
-}
-
-# ---------------------------------------------------------------------
-# helper: safe downloads. curl.exe is fast but IGNORES the Windows
-# system proxy (VPN/proxy clients set it in the registry - without it
-# raw.githubusercontent.com is unreachable from some networks while
-# the browser works fine). The proxy is therefore passed to curl
-# explicitly, and Invoke-WebRequest (system TLS/proxy stack) is the
-# fallback for both probing and downloading.
-# ---------------------------------------------------------------------
-$SysProxy = $null
-try {
-    $reg = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction Stop
-    if ($reg.ProxyEnable -eq 1 -and $reg.ProxyServer) {
-        $p = "$($reg.ProxyServer)"
-        if ($p -match '=') {   # per-scheme form "http=host:port;https=host:port"
-            $part = ($p -split ';' | Where-Object { $_ -match '^https?=' } | Select-Object -First 1)
-            if ($part) { $p = ($part -split '=', 2)[1] }
-        }
-        if ($p) {
-            if ($p -notmatch '^https?://') { $p = "http://$p" }
-            $SysProxy = $p
-        }
-    }
-} catch { }
-if ($SysProxy) { Write-Host "    using Windows system proxy: $SysProxy" }
-
-function Get-Url {
-    param([string]$Url, [string]$OutFile, [int]$TimeoutSec = 7200)
-    $tmp = "$OutFile.part"
-    # attempt 1: curl.exe (with the system proxy, if one is configured)
-    try {
-        $proxyLine = if ($SysProxy) { "--proxy `"$SysProxy`"" } else { "" }
-        cmd /c "`"$env:SystemRoot\System32\curl.exe`" -L --fail --retry 3 --retry-delay 2 $proxyLine -o `"$tmp`" --connect-timeout 30 --max-time $TimeoutSec `"$Url`" 2>nul"
-        if ($LASTEXITCODE -eq 0 -and (Test-Path $tmp)) {
-            Move-Item $tmp $OutFile -Force
-            return $true
-        }
-    } catch { }
-    # attempt 2: Invoke-WebRequest (system TLS/proxy stack, slower but
-    # succeeds where curl gets throttled/blocked)
-    try {
-        $prev = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
-        Invoke-WebRequest -Uri $Url -OutFile $tmp -TimeoutSec $TimeoutSec -UseBasicParsing | Out-Null
-        $ProgressPreference = $prev
-        if (Test-Path $tmp) {
-            Move-Item $tmp $OutFile -Force
-            return $true
-        }
-    } catch { }
-    $ProgressPreference = 'SilentlyContinue'
-    if (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
-    return $false
 }
 
 # ---------------------------------------------------------------------
