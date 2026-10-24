@@ -59,10 +59,16 @@
 #  - Animation (anime/Disney/Pixar rips) still looks best and plays
 #    fastest with the dedicated anime profile (Ctrl+n).
 #
+#  QUALITY v10 - marker round (no behavior change in THIS script): the
+#  release adds the '2x' SPEED profile (enhance-2x.vpy: lightest model,
+#  texture-restore kept - for 2x playback speed), auto NVENC encoder
+#  selection in the offline transcode runner, an honest end-to-end time
+#  estimate, and the false-FAILED fix for finished overnight jobs.
+#
 #  Used by mpv:  --vf=vapoursynth=enhance-general.vpy
 #  mpv provides the current frame as the "video_in" clip.
 # =====================================================================
-# AIVH PIPELINE VERSION: QUALITY v9
+# AIVH PIPELINE VERSION: QUALITY v10
 import os
 import vapoursynth as vs
 from vapoursynth import core

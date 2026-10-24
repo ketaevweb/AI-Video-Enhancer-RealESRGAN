@@ -645,6 +645,7 @@ Deploy-File 'enhance-film.vpy'     $Base
 Deploy-File 'enhance-film-hd.vpy'  $Base
 Deploy-File 'enhance-anime.vpy'    $Base
 Deploy-File 'enhance-general.vpy'  $Base
+Deploy-File 'enhance-2x.vpy'       $Base
 Deploy-File 'transcode-source.vpy' $Base
 Deploy-File 'build-engines.ps1'    $Base
 if (-not (Test-Path $ScriptsDir)) { New-Item -ItemType Directory -Path $ScriptsDir -Force | Out-Null }
@@ -707,12 +708,12 @@ Write-Ok "mpv config deployed to $portable (hotkeys: Ctrl+a films / Ctrl+f detai
 Write-Step 'Verifying pipeline version'
 $genVpy = Join-Path $Base 'enhance-general.vpy'
 $marker = $false
-try { $marker = Select-String -Path $genVpy -Pattern 'QUALITY v9' -Quiet } catch { }
+try { $marker = Select-String -Path $genVpy -Pattern 'QUALITY v10' -Quiet } catch { }
 if ($marker) {
-    Write-Ok 'pipeline version: QUALITY v9 (AI + texture restore on ALL sources; Ctrl+0 = AI-free natural view)'
+    Write-Ok 'pipeline version: QUALITY v10 (2x speed profile + auto NVENC transcode + honest ETA)'
 } else {
     # (stale-pipeline message below)
-    Write-Bad 'pipeline files are STALE - no QUALITY v9 marker in enhance-general.vpy.'
+    Write-Bad 'pipeline files are STALE - no QUALITY v10 marker in enhance-general.vpy.'
     Write-Host '    Old files either make live-action movies look like cartoons (PERF v6),'
     Write-Host '    skip the AI on HD sources (QUALITY v8), or crash with Resize error 3074.'
     Write-Host '    Two ways to fix:'
@@ -791,7 +792,7 @@ function Write-Bat([string]$Path, [string]$Text) {
     $Text = $Text -replace "(?<!`r)`n", "`r`n"
     Set-Content -Path $Path -Value $Text -Encoding ASCII
 }
-foreach ($profile in @('film','film-hd','anime','general')) {
+foreach ($profile in @('film','film-hd','anime','general','2x')) {
     $bat = Join-Path $Base "watch-AI-$profile.bat"
     Write-Bat $bat @"
 @echo off
@@ -891,8 +892,9 @@ $pathLine
 cd /d "%AIVH%"
 if "%~1"=="" (
     echo Drag a movie file onto this .bat for the FAST offline AI transcode.
-    echo Same as transcode-AI.bat but with the compact x4v3 model: 2-3x faster,
-    echo slightly softer detail than the RRDB 'hd' profile. Output 2560x1440.
+    echo Same as transcode-AI.bat but with the compact x4v3 model. The encoder
+    echo is chosen automatically: hardware NVENC when the GPU can (fast),
+    echo CPU x265 otherwise. Output 2560x1440.
     pause
     exit /b 0
 )
@@ -902,7 +904,7 @@ set "AIVH_TPROFILE=fast"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%AIVH%\scripts\transcode-runner.ps1" -Base "%AIVH%" -InputFile "%~1" -Mode "%AIVH_TMODE%" -Profile "%AIVH_TPROFILE%"
 pause
 "@
-Write-Ok 'launchers written: watch-AI-{general, anime, general-denoise, film, film-hd, debug}.bat + transcode-AI.bat + transcode-AI-fast.bat'
+Write-Ok 'launchers written: watch-AI-{general, anime, general-denoise, film, film-hd, 2x, debug}.bat + transcode-AI.bat + transcode-AI-fast.bat'
 
 # ---------------------------------------------------------------------
 # 7. TensorRT engines
@@ -921,14 +923,15 @@ Write-Host '=====================================================' -ForegroundCo
 Write-Host ''
 Write-Host '  How to watch:'
 Write-Host "    drag a movie onto  $Base\watch-AI-general.bat   (PRIMARY for films: AI + texture restore on HD and SD; Ctrl+0 = AI-free natural view)"
+Write-Host "    or onto            $Base\watch-AI-2x.bat        (SPEED profile for 2x watching: ~50-70 fps, stable at 2x; press Ctrl+2 inside mpv)"
 Write-Host "    or onto            $Base\watch-AI-film.bat      (opt-in detail mode ~10-15 fps, synthetic look)"
 Write-Host "    or onto            $Base\watch-AI-anime.bat     (anime/animation ONLY - paints live action)"
 Write-Host '  Offline transcode (nightly batch, saves a real enhanced file):'
 Write-Host "    drag a movie onto $Base\transcode-AI.bat       (max quality RRDB: 25 s test + estimate first; 'full' = the job)"
-Write-Host "    or onto            $Base\transcode-AI-fast.bat (fast x4v3 model, ~2-3x faster, slightly softer)"
+Write-Host "    or onto            $Base\transcode-AI-fast.bat (fast x4v3 model + AUTO encoder: hardware NVENC when available, ~3x faster than before)"
 Write-Host "    nothing happens?   drag the movie onto $Base\watch-AI-debug.bat"
 Write-Host '                       (runs mpv with a visible console and opens the error log in Notepad)'
-Write-Host '  In-player hotkeys: Ctrl+a films | Ctrl+f detail | Ctrl+n anime | Ctrl+0 AI off'
+Write-Host '  In-player hotkeys: Ctrl+a films | Ctrl+s 2x-speed view | Ctrl+f detail | Ctrl+n anime | Ctrl+0 AI off | Ctrl+2 speed 2.0 | Ctrl+1 speed 1.0'
 Write-Host '  Speed check  : powershell -ExecutionPolicy Bypass -File C:\AIVideoEnhancer\scripts\test-speed.ps1'
 Write-Host '  Rebuild      : powershell -ExecutionPolicy Bypass -File C:\AIVideoEnhancer\build-engines.ps1'
 Write-Host ''

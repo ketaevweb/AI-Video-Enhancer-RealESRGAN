@@ -52,13 +52,35 @@
    transcode-AI.bat "D:\Films\movie.mkv" full         no prompt, straight run
    transcode-AI.bat "D:\Films\movie.mkv" test fast    sample with 'fast' profile
  Profiles: hd (RRDB x2plus, max quality) | fast (x4v3) | general | anime
- Encoder :  -Encoder x265 (default, best size) | -Encoder nvenc (hardware HEVC,
-            frees the CPU; the right choice for the 4K-output anime profile)
+ Encoder :  -Encoder auto (default) = hevc_nvenc when the GPU really can
+            (runtime probe; hd profile stays x265) | x265 | nvenc
             -Cq 17 = quality (CRF for x265 / CQ for nvenc; lower = better)
  In test/ask mode the script also builds <name>_AI-COMPARE.mkv: the SAME
  25 s piece, LEFT = plain-upscaled original vs RIGHT = AI result, synced,
  so you can judge the quality before committing the night job.
  ffmpeg is downloaded automatically on first use if missing.
+
+ TRANSCODE v2.4 (three real defects found on a 17-min 720p job):
+ 1) HONEST ETA: the speed test used to bench the AI stage alone (x264
+    veryfast sample) - on the 'fast' profile it printed 31.7 fps / ~16 min,
+    while the real job ran at 11 fps / 47 min because the FINAL encoder
+    (libx265 medium on an i5-10400F) is 3x slower than the AI. The 25 s
+    test now renders through the REAL final encoder (x265 or nvenc),
+    so the estimate and the sample are both what you will actually get.
+ 2) ENCODER AUTO: -Encoder auto (the new default) picks hardware
+    hevc_nvenc when the GPU can really encode (runtime probe) - the
+    NVENC block works in PARALLEL with the CUDA AI render, so the job
+    becomes AI-bound (~3x faster on fast/general/anime; the 'hd'
+    profile keeps CPU x265 - it is archival quality and AI-bound
+    anyway). Explicit -Encoder x265 / -Encoder nvenc still win.
+ 3) FALSE FAILURE: on Windows PowerShell 5.1, Start-Process cmd.exe
+    -PassThru can leave .ExitCode unusable after the process exits -
+    a SUCCESSFUL overnight job was reported as FAILED and the finished
+    .part.mkv was DELETED (user's vid_720p run: vspipe rendered all
+    31350 frames, ffmpeg exited 0, job destroyed at 99.5%). The output
+    file itself is now the only verdict: it must exist AND its probed
+    duration must match the source (+-3 s). A non-zero/unavailable
+    exit code with a verified file prints a warning and KEEPS the file.
 
  NOTE ON NON-ASCII PATHS: the actual pipeline runs from a tiny .cmd
  file that references everything through %ENVIRONMENT% variables
@@ -73,7 +95,7 @@ param(
     [Parameter(Mandatory=$true)][string]$InputFile,
     [string]$Mode = 'ask',         # ask | test | full
     [string]$Profile = 'hd',       # hd | fast | general | anime
-    [string]$Encoder = 'x265',     # x265 (default, best size) | nvenc (hardware)
+    [string]$Encoder = 'auto',     # auto (default: nvenc if the GPU can, x265 otherwise; hd always x265) | x265 | nvenc
     [int]$Cq = 17                  # CRF (x265) / CQ (nvenc): lower = better + bigger
 )
 
@@ -161,7 +183,7 @@ function New-PipeCmdFile([string]$Path, [bool]$Fragment) {
         # copied audio at its original X-based timestamps - the preview
         # would have audio starting X seconds late. Re-encoding 25 s of
         # audio costs nothing and guarantees a 0-based, in-sync preview.
-        $line = "($vsp | `"%AIVH_FFMPEG%`" -hide_banner -loglevel warning -nostdin -y %AIVH_INARGS% -i `"%AIVH_SRC%`" %AIVH_AUDARGS% -c:v libx264 -preset veryfast -crf 16 -pix_fmt yuv420p10le `"%AIVH_SAMPLE%`") 2>`"%AIVH_LOG%`""
+        $line = "($vsp | `"%AIVH_FFMPEG%`" -hide_banner -loglevel warning -nostdin -nostats -y %AIVH_INARGS% -i `"%AIVH_SRC%`" %AIVH_AUDARGS% -c:v %AIVH_VENC% %AIVH_VENCARGS% `"%AIVH_SAMPLE%`") 2>`"%AIVH_LOG%`""
     } else {
         $line = "($vsp | `"%AIVH_FFMPEG%`" -hide_banner -loglevel warning -nostdin -y -nostats %AIVH_INARGS% -i `"%AIVH_SRC%`" -map 0:v:0 -map 1:a? -map 1:s? -map_metadata 1 -map_chapters 1 -c:v %AIVH_VENC% %AIVH_VENCARGS% -c:a copy -c:s copy -max_muxing_queue_size 10240 `"%AIVH_OUT%`") 2>`"%AIVH_LOG%`""
     }
@@ -188,6 +210,13 @@ function Read-LogTail([string]$Path, [int]$Bytes = 16384) {
 function Start-LivePipe([string]$CmdFile) {
     Write-Host '    live progress (Ctrl+C aborts the job):' -ForegroundColor DarkGray
     $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "`"$CmdFile`"" -NoNewWindow -PassThru
+    # v2.4: touch .Handle NOW, while the process is alive. On Windows
+    # PowerShell 5.1 a Process object from Start-Process -PassThru can
+    # refuse .ExitCode after the process has exited ("information is not
+    # available") when the handle was never cached - that turned into a
+    # false FAILED verdict on a finished job. The Confirm-TranscodeOutput
+    # check below is the real verdict anyway; this just fixes the report.
+    try { $null = $proc.Handle } catch { }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $lastFrame = -1; $lastTick = 0.0; $fps = 0.0; $total = $nb
     while (-not $proc.HasExited) {
@@ -215,7 +244,7 @@ function Start-LivePipe([string]$CmdFile) {
     }
     $null = $proc.WaitForExit()
     Write-Host ''
-    return ($proc.ExitCode -eq 0)
+    try { return ($proc.ExitCode -eq 0) } catch { return $false }
 }
 
 function Invoke-Pipe([string]$CmdFile, [bool]$Fragment, [switch]$Live) {
@@ -426,25 +455,53 @@ if (-not $ffprobe) { Write-Bad 'ffprobe.exe not found (must sit next to ffmpeg.e
 Write-Ok "ffmpeg: $ffmpeg"
 
 # ------------------------------------------------------------------
-# 3b. final encoder (video codec for the FULL run; the 25 s sample is
-#     always written with fast x264 so the bench measures the AI, not
-#     the encoder)
+# 3b. final encoder (video codec for the FULL run).
+#     v2.4: the 25 s speed test ALSO runs through this encoder, so the
+#     ETA includes the encode and the sample shows the final quality.
 # ------------------------------------------------------------------
+# runtime proof that hevc_nvenc works on THIS machine: the encoder can
+# be present in the ffmpeg build but fail at run time (no NVIDIA driver,
+# driver too old for the session API, hybrid laptops). A 10-frame
+# 320x240 probe settles it in ~1-2 s. BOTH calls go through
+# Invoke-Quiet - the v2.1 PS 5.1 stderr landmine applies here too.
+function Test-Nvenc([string]$Ffmpeg) {
+    $inBuild = $false
+    try { $inBuild = [bool]((Invoke-Quiet $Ffmpeg @('-hide_banner', '-encoders')) | Select-String -SimpleMatch 'hevc_nvenc') } catch { }
+    if (-not $inBuild) { return $false }
+    try {
+        Invoke-Quiet $Ffmpeg @('-v', 'error', '-nostdin', '-f', 'lavfi',
+            '-i', 'testsrc2=size=320x240:rate=30', '-frames:v', '10', '-an',
+            '-c:v', 'hevc_nvenc', '-preset', 'p1', '-f', 'null', '-') | Out-Null
+        return ($LASTEXITCODE -eq 0)
+    } catch { return $false }
+}
+
+if ($Encoder -eq 'auto') {
+    if ($Profile -eq 'hd') {
+        $Encoder = 'x265'
+        Write-Ok ('encoder: libx265 CRF{0} medium (auto: hd profile = max quality per bit; the AI render is the bottleneck anyway)' -f $Cq)
+    } elseif (Test-Nvenc $ffmpeg) {
+        $Encoder = 'nvenc'
+        Write-Ok ('encoder: hevc_nvenc CQ{0} (auto: hardware NVENC - encodes in parallel with the AI render, CPU stays free)' -f $Cq)
+    } else {
+        $Encoder = 'x265'
+        Write-Ok ('encoder: libx265 CRF{0} medium (auto: hevc_nvenc not available on this machine - CPU encode)' -f $Cq)
+        if ($Profile -eq 'anime') {
+            Write-Wrn 'anime profile outputs 4K: CPU x265 will be the bottleneck.'
+        }
+    }
+}
 if ($Encoder -eq 'nvenc') {
-    $hasNvenc = $false
-    try { $hasNvenc = [bool]((Invoke-Quiet $ffmpeg @('-hide_banner', '-encoders')) | Select-String -SimpleMatch 'hevc_nvenc') } catch { }
-    if (-not $hasNvenc) {
-        Write-Bad 'this ffmpeg build has no hevc_nvenc - use -Encoder x265 (default) or another ffmpeg build.'
+    if (-not (Test-Nvenc $ffmpeg)) {
+        Write-Bad 'this ffmpeg build/machine has no working hevc_nvenc - use -Encoder x265 or update the NVIDIA driver.'
         exit 1
     }
     Write-Ok ('encoder: hevc_nvenc CQ{0} (hardware NVENC - near-zero CPU load)' -f $Cq)
-} else {
+} elseif ($Encoder -ne 'x265') {
     $Encoder = 'x265'
+}
+if ($Encoder -eq 'x265') {
     Write-Ok ('encoder: libx265 CRF{0} medium (CPU encode - best size/quality per bit)' -f $Cq)
-    if ($Profile -eq 'anime') {
-        Write-Wrn 'anime profile outputs 4K: CPU x265 will be the bottleneck (~4-6 fps).'
-        Write-Wrn 'Consider -Encoder nvenc for this profile (hardware, ~3x faster total).'
-    }
 }
 
 # ------------------------------------------------------------------
@@ -604,7 +661,7 @@ $env:AIVH_OUT               = $partFile
 $env:AIVH_LOG               = $logFile
 Remove-Item -LiteralPath $sample -Force -ErrorAction SilentlyContinue
 
-Write-Step ("Speed test: AI-rendering frames {0}-{1} (~{2:F0} min into the movie, takes ~2-4 min)..." -f ($startF + 1), $endF, ($startF / $fps / 60))
+Write-Step ("Speed test: rendering frames {0}-{1} through the FINAL encoder (~{2:F0} min into the movie, takes ~2-4 min)..." -f ($startF + 1), $endF, ($startF / $fps / 60))
 $benchCmd = Join-Path $env:TEMP 'aivh_transcode_bench.cmd'
 
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -622,11 +679,11 @@ if (-not $pipeOk -or -not (Test-Path -LiteralPath $sample)) {
 }
 $fpsMeas = $probeN / $sw.Elapsed.TotalSeconds
 $etaSec  = $nb / $fpsMeas
-Write-Ok ("measured speed: {0:F2} fps  ({1:F0} s for {2} frames, engine load included)" -f $fpsMeas, $sw.Elapsed.TotalSeconds, $probeN)
+Write-Ok ("measured end-to-end speed: {0:F2} fps ({1:F0} s for {2} frames, AI + encode together)" -f $fpsMeas, $sw.Elapsed.TotalSeconds, $probeN)
 Write-Host ''
 Write-Host ('    >>> ESTIMATED TOTAL TIME for this movie: ~{0}  ({1} frames, {2}) <<<' -f (Format-Duration $etaSec), $nb, (Format-Duration $dur)) -ForegroundColor Yellow
 Write-Host ('    sample so you can SEE the result: {0}' -f $sample)
-Write-Host '    (the sample is encoded fast-and-dirty x264; the final file uses slower, better HEVC)'
+Write-Host '    (the sample uses the SAME encoder as the final file - what you see is what you get)'
 Write-Host ''
 
 # ------------------------------------------------------------------
@@ -686,25 +743,47 @@ Remove-Item -LiteralPath $partFile -Force -ErrorAction SilentlyContinue
 $sw2 = [System.Diagnostics.Stopwatch]::StartNew()
 $pipeOk2 = Invoke-Pipe $fullCmd $false -Live
 $sw2.Stop()
-if (-not $pipeOk2 -or -not (Test-Path -LiteralPath $partFile)) {
-    Write-Bad ("transcode FAILED (see the errors above). Last lines of {0}:" -f $logFile)
+
+# v2.4 verdict: the OUTPUT FILE is the only reliable truth. The exit
+# code of the pipe is advisory only - on Windows PowerShell 5.1 the
+# Start-Process cmd.exe .ExitCode can be unavailable even after a
+# clean run (handle-caching quirk), which used to declare a finished
+# job FAILED and DELETE the completed .part.mkv (31350/31350 frames
+# rendered, ffmpeg exit 0 - and the file was destroyed at 99.5%).
+# Success now requires BOTH: the file exists AND its probed duration
+# matches the source within 3 s (catches disk-full deaths at the very
+# end, killed ffmpeg, truncated renders). A non-zero exit code with a
+# verified file = keep the file, print a warning.
+function Confirm-TranscodeOutput {
+    param([string]$PartFile, [string]$Ffprobe, [double]$SrcDur)
+    if (-not (Test-Path -LiteralPath $PartFile)) {
+        return @{ Ok = $false; Reason = 'no output file was produced' }
+    }
+    $outDur = 0.0
+    try {
+        $raw2 = (& $Ffprobe -v error -select_streams v:0 -show_entries 'format=duration' -of json -- $PartFile) -join "`n"
+        if ("$raw2" -match '"duration"\s*:\s*"(\d+(\.\d+)?)"') { $outDur = [double]$Matches[1] }
+    } catch { }
+    if ($outDur -le 0) {
+        return @{ Ok = $false; Reason = 'the output file exists but its duration is unreadable (unfinalized/truncated container)' }
+    }
+    if ($SrcDur -gt 0 -and ([math]::Abs($outDur - $SrcDur) -gt 3)) {
+        return @{ Ok = $false; Reason = ('output duration {0:F1} s vs source {1:F1} s - the render aborted mid-way' -f $outDur, $SrcDur) }
+    }
+    return @{ Ok = $true; Reason = '' }
+}
+
+$verdict = Confirm-TranscodeOutput -PartFile $partFile -Ffprobe $ffprobe -SrcDur $dur
+if (-not $verdict.Ok) {
+    Write-Bad ("transcode FAILED: {0}. Last lines of {1}:" -f $verdict.Reason, $logFile)
     if (Test-Path -LiteralPath $logFile) {
         Get-Content -LiteralPath $logFile -Tail 15 | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkGray }
     }
     Remove-Item -LiteralPath $partFile -Force -ErrorAction SilentlyContinue
     exit 1
 }
-
-# the pipe hides vspipe failures (ffmpeg happily encodes whatever came
-# through), so verify the result actually covers the whole source
-$raw2 = (& $ffprobe -v error -select_streams v:0 -show_entries 'format=duration' -of json -- $partFile) -join "`n"
-$outDur = 0.0
-if ($raw2 -match '"duration"\s*:\s*"(\d+(\.\d+)?)"') { $outDur = [double]$Matches[1] }
-if ($dur -gt 0 -and $outDur -gt 0 -and ([math]::Abs($outDur - $dur) -gt 3)) {
-    Write-Bad ("result duration {0:F1} s vs source {1:F1} s - the render aborted mid-way, file deleted." -f $outDur, $dur)
-    Write-Bad 'Check the vspipe error above / in the log, fix the cause and simply start again.'
-    Remove-Item -LiteralPath $partFile -Force -ErrorAction SilentlyContinue
-    exit 1
+if (-not $pipeOk2) {
+    Write-Wrn 'the pipe reported a non-zero/unavailable exit code, but the output file passed the duration check - keeping it.'
 }
 Move-Item -LiteralPath $partFile -Destination $outFile -Force
 $sizeGb = [math]::Round((Get-Item -LiteralPath $outFile).Length / 1GB, 2)
